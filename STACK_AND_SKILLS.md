@@ -5,7 +5,7 @@ This document tracks the exact technology stack and agent skills used in `kld-la
 ## Tech Stack
 
 * **Language:** Java 17 (`JavaVersion.VERSION_17`), no Kotlin
-* **UI & Platform APIs:** Pure Android Framework (`Activity`, `ListView`, `BaseAdapter`, `LinearLayout`, `TextView`, `ImageView`, `LruCache`, `RoleManager`, `PackageManager`, `SharedPreferences`) with programmatic views (no layout XML) and VectorDrawables (`ic_launcher.xml`, `ic_launcher_fg.xml`, `ic_settings.xml`)
+* **UI & Platform APIs:** Pure Android Framework (`Activity`, `ListView`, `BaseAdapter`, `LinearLayout`, `TextView`, `ImageView`, `LruCache`, `RoleManager`, `PackageManager`, `LauncherApps`, `ShortcutInfo`, `UserManager`, `SharedPreferences`) with programmatic views (no layout XML) and VectorDrawables (`ic_launcher.xml`, `ic_launcher_fg.xml`, `ic_settings.xml`)
 * **Dependencies:** Zero third-party libraries, zero AndroidX, zero Jetpack Compose (enforced by [docs/adr/0002-java-only-zero-dependencies.md](./docs/adr/0002-java-only-zero-dependencies.md))
 * **Build System:** Gradle `9.6.0` (Kotlin DSL), Android Gradle Plugin `9.5.3`
 * **Android SDK Targets:** `compileSdk 35`, `minSdk 24`, `targetSdk 35`

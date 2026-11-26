@@ -13,19 +13,19 @@ The scrolling list of app names, sorted by the chosen sort order (most used by d
 _Avoid_: Drawer, menu, home screen
 
 **Dock**:
-The fixed bar at the bottom of the screen. Shows icons only: the Settings button and up to four Docked apps.
+The fixed bar at the bottom of the screen. Shows icons only: the Settings button and up to five Docked apps. Dock positions are sorted in Settings.
 _Avoid_: Taskbar, favourites, shelf
 
 **Dock slot**:
-One of the four positions in the Dock that can hold an App. Slots fill left to right with no gaps.
+One of the five positions in the Dock that can hold a Docked app. Slots fill left to right with no gaps.
 _Avoid_: Cell, pin
 
 **Docked app**:
-An App that currently lives in the Dock. An App is in the Dock or in the App list, never both.
+An App that currently lives in the Dock (pinned from the App long-press menu). An App is in the Dock or in the App list, never both.
 _Avoid_: Pinned app, favourite
 
 **Settings button**:
-The permanent gear at the far left of the Dock. It is not an App and does not use a Dock slot.
+The permanent gear in the Dock. It is not an App, does not use a Dock slot, and its position in the Dock can be sorted in Settings.
 _Avoid_: Gear icon, menu button
 
 **Launch count**:
