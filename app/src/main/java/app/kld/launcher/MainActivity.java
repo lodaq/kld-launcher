@@ -36,7 +36,10 @@ import android.util.LruCache;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.BaseAdapter;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -55,7 +58,7 @@ public final class MainActivity extends Activity {
     private static final int BG = 0xFF000000, TEXT = 0xFFFFFFFF, SEC = 0xFF8A8A8A, DIV = 0xFF222222;
     private static final int DOCK_MAX = 5, DOCK_CELLS = DOCK_MAX + 1, MAX_SHORTCUTS = 5;
     private static final int SCREEN_MAIN = 0, SCREEN_SETTINGS = 1, SCREEN_HIDDEN = 2, SCREEN_SORT_DOCK = 3,
-            SCREEN_APP_MENU = 4, SCREEN_APP_LIMITS = 5, SCREEN_APP_LIMIT = 6;
+            SCREEN_APP_MENU = 4, SCREEN_APP_LIMITS = 5, SCREEN_APP_LIMIT = 6, SCREEN_RENAME = 7;
     private static final int[] LIMIT_MINS = {0, 1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240};
     private static final String GEAR_KEY = "_gear";
 
@@ -79,7 +82,7 @@ public final class MainActivity extends Activity {
     private final HashSet<String> blockedKeys = new HashSet<>();
     private final ImageView[] cells = new ImageView[DOCK_CELLS];
     private final LruCache<String, Drawable> dockCache = new LruCache<>(DOCK_MAX + 4);
-    private SharedPreferences counts, labels, prefs, limits;
+    private SharedPreferences counts, labels, customLabels, prefs, limits;
     private PackageManager pm;
     private ActivityManager am;
     private AppOpsManager aom;
@@ -95,7 +98,7 @@ public final class MainActivity extends Activity {
     private BaseAdapter adapter, appLimitsAdapter;
     private boolean icons, showUsage, pendingUsagePerm, pendingLimitsPerm, clones, singleApp, dirty, reload,
             sortFromSettings, limitFromAppMenu, hasSyncedUsage;
-    private App pendingLimitApp, limitApp;
+    private App pendingLimitApp, limitApp, renameApp;
     private String loadedLoc = "";
     private int screen, gearPos, listIconPx, dockIconPx;
     private volatile int iconGen, usageGen, usageWorkingGen = -1;
@@ -118,6 +121,7 @@ public final class MainActivity extends Activity {
         iconPlaceholder.setBounds(0, 0, listIconPx, listIconPx);
         counts = getSharedPreferences("c", 0);
         labels = getSharedPreferences("l", 0);
+        customLabels = getSharedPreferences("names", 0);
         prefs = getSharedPreferences("s", 0); // keys: "icons", "usage", "clones", "single", "dock", "gear", "hidden"
         limits = getSharedPreferences("lim", 0); // app key -> daily limit in minutes
         icons = prefs.getBoolean("icons", false);
@@ -238,7 +242,11 @@ public final class MainActivity extends Activity {
 
     @Override public void onBackPressed() {
         if (screen == SCREEN_HIDDEN || screen == SCREEN_APP_LIMITS) showSettings();
-        else if (screen == SCREEN_APP_LIMIT) {
+        else if (screen == SCREEN_RENAME) {
+            hideKeyboard();
+            if (renameApp != null) showAppMenu(renameApp);
+            else showMain();
+        } else if (screen == SCREEN_APP_LIMIT) {
             if (limitFromAppMenu && limitApp != null) showAppMenu(limitApp);
             else showAppLimits();
         } else if (screen == SCREEN_SORT_DOCK) {
@@ -385,6 +393,7 @@ public final class MainActivity extends Activity {
         screen = SCREEN_MAIN;
         appLimitsAdapter = null;
         limitApp = null;
+        renameApp = null;
         setContentView(main);
         if (reload) {
             reload = dirty = false;
@@ -692,6 +701,7 @@ public final class MainActivity extends Activity {
         screen = SCREEN_APP_MENU;
         appLimitsAdapter = null;
         limitApp = null;
+        renameApp = null;
         LinearLayout s = column();
         s.addView(row(a.label, "", null));
         s.addView(rule());
@@ -757,6 +767,9 @@ public final class MainActivity extends Activity {
             items.addView(rule());
         }
 
+        items.addView(row("Rename", customLabels.contains(a.key) ? "Custom" : "", v -> showRename(a)));
+        items.addView(rule());
+
         items.addView(row("App info", "", v -> {
             try {
                 if (a.user != null && la != null) {
@@ -785,6 +798,77 @@ public final class MainActivity extends Activity {
         sv.addView(items);
         s.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(s);
+    }
+
+    private void showRename(final App a) {
+        screen = SCREEN_RENAME;
+        renameApp = a;
+        int pad = dp(16);
+        LinearLayout s = column();
+        s.addView(row("Rename", a.label, null));
+        s.addView(rule());
+
+        final EditText et = new EditText(this);
+        et.setBackground(null);
+        et.setTextColor(TEXT);
+        et.setHintTextColor(SEC);
+        et.setTextSize(20);
+        et.setSingleLine(true);
+        et.setMinimumHeight(dp(48));
+        et.setPadding(pad, pad, pad, pad);
+        String sys = labels.getString(a.key, null);
+        et.setHint(sys != null ? sys : a.label);
+        et.setText(a.label);
+        et.setSelection(et.getText().length());
+        et.setImeOptions(EditorInfo.IME_ACTION_DONE);
+        et.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                saveRename(a, et.getText().toString());
+                return true;
+            }
+            return false;
+        });
+        s.addView(et, new LinearLayout.LayoutParams(-1, -2));
+        s.addView(rule());
+
+        s.addView(row("Save", "", v -> saveRename(a, et.getText().toString())));
+        s.addView(rule());
+        if (customLabels.contains(a.key)) {
+            s.addView(row("Reset to default", "", v -> resetRename(a)));
+            s.addView(rule());
+        }
+        setContentView(s);
+        et.requestFocus();
+        et.post(() -> {
+            InputMethodManager imm = getSystemService(InputMethodManager.class);
+            if (imm != null) imm.showSoftInput(et, InputMethodManager.SHOW_IMPLICIT);
+        });
+    }
+
+    private void saveRename(App a, String raw) {
+        hideKeyboard();
+        String next = raw == null ? "" : raw.trim();
+        if (next.isEmpty()) return;
+        customLabels.edit().putString(a.key, next).apply();
+        a.label = next;
+        dirty = true;
+        showAppMenu(a);
+    }
+
+    private void resetRename(App a) {
+        hideKeyboard();
+        customLabels.edit().remove(a.key).apply();
+        String sys = labels.getString(a.key, null);
+        if (sys != null) a.label = sys;
+        else reload = true;
+        dirty = true;
+        showAppMenu(a);
+    }
+
+    private void hideKeyboard() {
+        View v = getCurrentFocus();
+        InputMethodManager imm = getSystemService(InputMethodManager.class);
+        if (imm != null && v != null) imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
     }
 
     private void addShortcuts(LinearLayout items, App a) {
@@ -930,12 +1014,14 @@ public final class MainActivity extends Activity {
             App app = new App();
             app.cn = new ComponentName(a.packageName, a.name);
             app.key = app.cn.flattenToShortString();
-            app.label = labels.getString(app.key, null);
-            if (app.label == null) {
-                app.label = r.loadLabel(pm).toString();
+            String sysLabel = labels.getString(app.key, null);
+            if (sysLabel == null) {
+                sysLabel = r.loadLabel(pm).toString();
                 if (ed == null) ed = labels.edit();
-                ed.putString(app.key, app.label);
+                ed.putString(app.key, sysLabel);
             }
+            String custom = customLabels.getString(app.key, null);
+            app.label = (custom != null && !custom.isEmpty()) ? custom : sysLabel;
             app.n = counts.getInt(app.key, 0);
             byKey.put(app.key, app);
         }
@@ -953,15 +1039,17 @@ public final class MainActivity extends Activity {
                         app.cn = cn;
                         app.user = u;
                         app.key = sn + "#" + cn.flattenToShortString();
-                        app.label = labels.getString(app.key, null);
-                        if (app.label == null) {
+                        String sysLabel = labels.getString(app.key, null);
+                        if (sysLabel == null) {
                             CharSequence raw = info.getLabel();
                             String base = raw == null ? cn.getClassName() : raw.toString();
                             String badged = pm.getUserBadgedLabel(base, u).toString();
-                            app.label = badged.equals(base) ? base + " (Clone)" : badged;
+                            sysLabel = badged.equals(base) ? base + " (Clone)" : badged;
                             if (ed == null) ed = labels.edit();
-                            ed.putString(app.key, app.label);
+                            ed.putString(app.key, sysLabel);
                         }
+                        String custom = customLabels.getString(app.key, null);
+                        app.label = (custom != null && !custom.isEmpty()) ? custom : sysLabel;
                         app.n = counts.getInt(app.key, 0);
                         byKey.put(app.key, app);
                     }
