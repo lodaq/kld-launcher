@@ -111,7 +111,7 @@ public final class MainActivity extends Activity {
     private Runnable pendingOwnerAction;
     private String loadedLoc = "";
     private int screen, gearPos, listIconPx, dockIconPx;
-    private volatile int iconGen, usageGen, usageWorkingGen = -1;
+    private volatile int iconGen, iconWorkingGen = -1, usageGen, usageWorkingGen = -1;
     private long lastUsageUptime, lastUsageDayStart;
     private float density;
 
@@ -427,7 +427,7 @@ public final class MainActivity extends Activity {
             bind();
         } else if (icons != (iconCache != null)) {
             if (icons) {
-                iconCache = new LruCache<>(Math.max(128, byKey.size() + 32));
+                ensureIconCache();
                 adapter.notifyDataSetChanged();
                 preloadIcons();
             } else {
@@ -450,7 +450,7 @@ public final class MainActivity extends Activity {
         addRow(items, "Show icons", icons ? "On" : "Off", v -> {
             icons = !icons;
             prefs.edit().putBoolean("icons", icons).apply();
-            ((TextView) ((LinearLayout) v).getChildAt(1)).setText(icons ? "On" : "Off");
+            setRowValue(v, icons ? "On" : "Off");
         });
         addRow(items, "Show time today", (showUsage && hasUsagePermission()) ? "On" : "Off", v -> {
             if (!hasUsagePermission()) {
@@ -464,18 +464,18 @@ public final class MainActivity extends Activity {
             dirty = true;
             ++usageGen;
             prefs.edit().putBoolean("usage", showUsage).apply();
-            ((TextView) ((LinearLayout) v).getChildAt(1)).setText(showUsage ? "On" : "Off");
+            setRowValue(v, showUsage ? "On" : "Off");
         });
         addRow(items, "Show clones", clones ? "On" : "Off", v -> {
             clones = !clones;
             reload = true;
             prefs.edit().putBoolean("clones", clones).apply();
-            ((TextView) ((LinearLayout) v).getChildAt(1)).setText(clones ? "On" : "Off");
+            setRowValue(v, clones ? "On" : "Off");
         });
         addRow(items, "Close previous app", singleApp ? "On" : "Off", v -> {
             singleApp = !singleApp;
             prefs.edit().putBoolean("single", singleApp).apply();
-            ((TextView) ((LinearLayout) v).getChildAt(1)).setText(singleApp ? "On" : "Off");
+            setRowValue(v, singleApp ? "On" : "Off");
         });
         addRow(items, "Hidden apps", String.valueOf(hidden.size()), v -> showHidden());
         addRow(items, "App limits", appLimitsSettingsValue(), v -> openLimits(null));
@@ -549,7 +549,7 @@ public final class MainActivity extends Activity {
             }
             prefs.edit().putStringSet("hidden", new HashSet<>(hidden)).apply();
             dirty = true;
-            ((TextView) ((LinearLayout) v).getChildAt(1)).setText(nowHidden ? "Hidden" : "");
+            setRowValue(v, nowHidden ? "Hidden" : "");
         });
         s.addView(wrapWithScrollbar(hl), new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(s);
@@ -965,9 +965,7 @@ public final class MainActivity extends Activity {
         sortShown();
         ++iconGen;
         if (icons) {
-            int cap = Math.max(128, byKey.size() + 32);
-            if (iconCache == null) iconCache = new LruCache<>(cap);
-            else if (iconCache.maxSize() < cap) iconCache.resize(cap);
+            ensureIconCache();
         } else {
             iconCache = null;
         }
@@ -1093,7 +1091,7 @@ public final class MainActivity extends Activity {
             bind();
         } else if (icons && iconCache == null) {
             ++iconGen;
-            iconCache = new LruCache<>(Math.max(128, byKey.size() + 32));
+            ensureIconCache();
             adapter.notifyDataSetChanged();
             preloadIcons();
         } else {
@@ -1161,7 +1159,11 @@ public final class MainActivity extends Activity {
 
     // ---- icons ----
 
-    private volatile int iconWorkingGen = -1;
+    private void ensureIconCache() {
+        int cap = Math.max(128, byKey.size() + 32);
+        if (iconCache == null) iconCache = new LruCache<>(cap);
+        else if (iconCache.maxSize() < cap) iconCache.resize(cap);
+    }
 
     private Drawable icon(App a) {
         try {
@@ -1782,6 +1784,10 @@ public final class MainActivity extends Activity {
         sv.setVerticalScrollBarEnabled(false);
         sv.addView(items);
         s.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+    }
+
+    private void setRowValue(View row, String text) {
+        ((TextView) ((LinearLayout) row).getChildAt(1)).setText(text);
     }
 
     private View row(String label, String value, View.OnClickListener click) {
