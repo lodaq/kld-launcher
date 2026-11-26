@@ -11,3 +11,8 @@ Always update [STACK_AND_SKILLS.md](./STACK_AND_SKILLS.md) in the same turn when
 
 * Check [CONTEXT.md](./CONTEXT.md), [DESIGN.md](./DESIGN.md), and [docs/adr/](./docs/adr/) before implementing changes.
 * When finishing a feature listed in [FEATURES.md](./FEATURES.md), mark its checkbox `[x]` in the same turn.
+
+## Device Testing & Verification
+
+* Always build, install, and verify changes on the user's connected phone (for example via `adb` / `android` CLI) before considering a task complete.
+* If no physical phone is connected or reachable, report that clearly to the user and do not claim runtime verification passed.

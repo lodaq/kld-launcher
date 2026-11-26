@@ -54,7 +54,9 @@ import java.util.Objects;
 public final class MainActivity extends Activity {
     private static final int BG = 0xFF000000, TEXT = 0xFFFFFFFF, SEC = 0xFF8A8A8A, DIV = 0xFF222222;
     private static final int DOCK_MAX = 5, DOCK_CELLS = DOCK_MAX + 1, MAX_SHORTCUTS = 5;
-    private static final int SCREEN_MAIN = 0, SCREEN_SETTINGS = 1, SCREEN_HIDDEN = 2, SCREEN_SORT_DOCK = 3, SCREEN_APP_MENU = 4;
+    private static final int SCREEN_MAIN = 0, SCREEN_SETTINGS = 1, SCREEN_HIDDEN = 2, SCREEN_SORT_DOCK = 3,
+            SCREEN_APP_MENU = 4, SCREEN_APP_LIMITS = 5, SCREEN_APP_LIMIT = 6;
+    private static final int[] LIMIT_MINS = {0, 1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240};
     private static final String GEAR_KEY = "_gear";
 
     static final class App { String key, label; ComponentName cn; UserHandle user; int n; }
@@ -62,6 +64,7 @@ public final class MainActivity extends Activity {
         String key, timeText;
         Drawable icon;
         TextView name, time;
+        int nameColor = TEXT;
     }
 
     private final HashMap<String, App> byKey = new HashMap<>();
@@ -69,10 +72,13 @@ public final class MainActivity extends Activity {
     private final ArrayList<App> shown = new ArrayList<>();   // the App list (not docked, not hidden)
     private final ArrayList<String> dock = new ArrayList<>(); // docked keys, no gaps
     private final HashSet<String> hidden = new HashSet<>();
-    private final HashMap<String, String> usageLabels = new HashMap<>();
+    private final HashMap<String, Integer> appLimits = new HashMap<>();
+    private final HashMap<String, Long> usageMs = new HashMap<>();
+    private final HashMap<String, String> rightLabels = new HashMap<>();
+    private final HashSet<String> blockedKeys = new HashSet<>();
     private final ImageView[] cells = new ImageView[DOCK_CELLS];
     private final LruCache<String, Drawable> dockCache = new LruCache<>(DOCK_MAX + 4);
-    private SharedPreferences counts, labels, prefs;
+    private SharedPreferences counts, labels, prefs, limits;
     private PackageManager pm;
     private ActivityManager am;
     private AppOpsManager aom;
@@ -85,12 +91,14 @@ public final class MainActivity extends Activity {
     private Drawable iconPlaceholder;
     private LinearLayout main;
     private ListView list;
-    private BaseAdapter adapter;
-    private boolean icons, showUsage, pendingUsagePerm, clones, singleApp, dirty, reload, sortFromSettings;
+    private BaseAdapter adapter, appLimitsAdapter;
+    private boolean icons, showUsage, pendingUsagePerm, pendingLimitsPerm, clones, singleApp, dirty, reload,
+            sortFromSettings, limitFromAppMenu, hasSyncedUsage;
+    private App pendingLimitApp, limitApp;
     private String loadedLoc = "";
     private int screen, gearPos, listIconPx, dockIconPx;
     private volatile int iconGen, usageGen, usageWorkingGen = -1;
-    private long lastUsageUptime;
+    private long lastUsageUptime, lastUsageDayStart;
     private float density;
 
     @Override protected void onCreate(Bundle b) {
@@ -110,12 +118,19 @@ public final class MainActivity extends Activity {
         counts = getSharedPreferences("c", 0);
         labels = getSharedPreferences("l", 0);
         prefs = getSharedPreferences("s", 0); // keys: "icons", "usage", "clones", "single", "dock", "gear", "hidden"
+        limits = getSharedPreferences("lim", 0); // app key -> daily limit in minutes
         icons = prefs.getBoolean("icons", false);
         showUsage = prefs.getBoolean("usage", false);
         clones = prefs.getBoolean("clones", false);
         singleApp = prefs.getBoolean("single", false);
         gearPos = Math.max(0, Math.min(DOCK_MAX, prefs.getInt("gear", 0)));
         hidden.addAll(prefs.getStringSet("hidden", Collections.emptySet()));
+        for (Map.Entry<String, ?> e : limits.getAll().entrySet()) {
+            if (e.getValue() instanceof Integer) {
+                int mins = (Integer) e.getValue();
+                if (mins > 0) appLimits.put(e.getKey(), mins);
+            }
+        }
         main = buildMain();
         setContentView(main);
         if (la != null) {
@@ -150,8 +165,20 @@ public final class MainActivity extends Activity {
                 prefs.edit().putBoolean("usage", true).apply();
                 showSettings();
             }
+        } else if (pendingLimitsPerm) {
+            pendingLimitsPerm = false;
+            App target = pendingLimitApp;
+            pendingLimitApp = null;
+            if (hasUsagePermission()) {
+                lastUsageUptime = 0;
+                syncUsage();
+                if (target != null) showAppLimit(target, limitFromAppMenu);
+                else showAppLimits();
+            }
         } else if (screen == SCREEN_MAIN) {
             syncIfNeeded();
+        } else if (screen == SCREEN_APP_LIMITS) {
+            syncUsage();
         }
     }
 
@@ -176,8 +203,7 @@ public final class MainActivity extends Activity {
             }
             if (level >= TRIM_MEMORY_COMPLETE) {
                 ++usageGen;
-                lastUsageUptime = 0;
-                usageLabels.clear();
+                clearUsageState();
                 dockCache.evictAll();
                 for (ImageView cell : cells) {
                     if (!GEAR_KEY.equals(cell.getTag())) {
@@ -210,8 +236,11 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
-        if (screen == SCREEN_HIDDEN) showSettings();
-        else if (screen == SCREEN_SORT_DOCK) {
+        if (screen == SCREEN_HIDDEN || screen == SCREEN_APP_LIMITS) showSettings();
+        else if (screen == SCREEN_APP_LIMIT) {
+            if (limitFromAppMenu && limitApp != null) showAppMenu(limitApp);
+            else showAppLimits();
+        } else if (screen == SCREEN_SORT_DOCK) {
             if (sortFromSettings) showSettings();
             else showMain();
         } else if (screen == SCREEN_SETTINGS || screen == SCREEN_APP_MENU) {
@@ -242,10 +271,7 @@ public final class MainActivity extends Activity {
     private LinearLayout buildMain() {
         final int pad = dp(16);
         LinearLayout m = column();
-        list = new ListView(this);
-        list.setDivider(null);
-        list.setSelector(android.R.color.transparent);
-        list.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        list = plainList();
         adapter = new BaseAdapter() {
             public int getCount() { return shown.size(); }
             public Object getItem(int i) { return shown.get(i); }
@@ -286,6 +312,11 @@ public final class MainActivity extends Activity {
                 App a = shown.get(i);
                 rt.key = a.key;
                 rt.name.setText(a.label);
+                int targetColor = blockedKeys.contains(a.key) ? SEC : TEXT;
+                if (rt.nameColor != targetColor) {
+                    rt.nameColor = targetColor;
+                    rt.name.setTextColor(targetColor);
+                }
                 Drawable target = null;
                 if (iconCache != null) {
                     Drawable d = iconCache.get(a.key);
@@ -295,7 +326,7 @@ public final class MainActivity extends Activity {
                     rt.icon = target;
                     rt.name.setCompoundDrawablesRelative(target, null, null, null);
                 }
-                String tt = showUsage && a.user == null ? usageLabels.get(a.cn.getPackageName()) : null;
+                String tt = rightLabels.get(a.key);
                 int vis = tt != null ? View.VISIBLE : View.GONE;
                 if (rt.time.getVisibility() != vis) rt.time.setVisibility(vis);
                 if (tt != null && !tt.equals(rt.timeText)) {
@@ -345,6 +376,8 @@ public final class MainActivity extends Activity {
 
     private void showMain() {
         screen = SCREEN_MAIN;
+        appLimitsAdapter = null;
+        limitApp = null;
         setContentView(main);
         if (reload) {
             reload = dirty = false;
@@ -369,6 +402,8 @@ public final class MainActivity extends Activity {
 
     private void showSettings() {
         screen = SCREEN_SETTINGS;
+        appLimitsAdapter = null;
+        limitApp = null;
         LinearLayout s = column();
         s.addView(row("Settings", "", null));
         s.addView(rule());
@@ -379,24 +414,18 @@ public final class MainActivity extends Activity {
         }));
         s.addView(rule());
         s.addView(row("Show time today", (showUsage && hasUsagePermission()) ? "On" : "Off", v -> {
-            TextView val = (TextView) ((LinearLayout) v).getChildAt(1);
-            if (showUsage && hasUsagePermission()) {
-                showUsage = false;
-                pendingUsagePerm = false;
-                lastUsageUptime = 0;
-                ++usageGen;
-                prefs.edit().putBoolean("usage", false).apply();
-                val.setText("Off");
-            } else if (hasUsagePermission()) {
-                showUsage = true;
-                pendingUsagePerm = false;
-                lastUsageUptime = 0;
-                prefs.edit().putBoolean("usage", true).apply();
-                val.setText("On");
-            } else {
+            if (!hasUsagePermission()) {
                 pendingUsagePerm = true;
                 openUsageAccessSettings();
+                return;
             }
+            showUsage = !showUsage;
+            pendingUsagePerm = false;
+            clearUsageState();
+            dirty = true;
+            ++usageGen;
+            prefs.edit().putBoolean("usage", showUsage).apply();
+            ((TextView) ((LinearLayout) v).getChildAt(1)).setText(showUsage ? "On" : "Off");
         }));
         s.addView(rule());
         s.addView(row("Show clones", clones ? "On" : "Off", v -> {
@@ -414,6 +443,16 @@ public final class MainActivity extends Activity {
         s.addView(rule());
         s.addView(row("Hidden apps", String.valueOf(hidden.size()), v -> showHidden()));
         s.addView(rule());
+        s.addView(row("App limits", appLimitsSettingsValue(), v -> {
+            if (!hasUsagePermission()) {
+                pendingLimitsPerm = true;
+                pendingLimitApp = null;
+                openUsageAccessSettings();
+            } else {
+                showAppLimits();
+            }
+        }));
+        s.addView(rule());
         s.addView(row("Sort dock", "", v -> showSortDock(true)));
         s.addView(rule());
         s.addView(row("Manage apps", "", v -> {
@@ -426,11 +465,7 @@ public final class MainActivity extends Activity {
 
     private void showHidden() {
         screen = SCREEN_HIDDEN;
-        if (reload) {
-            reload = false;
-            load();
-            bind();
-        }
+        reloadIfNeeded();
         final ArrayList<App> all = new ArrayList<>(byKey.values());
         Collections.sort(all, (x, y) -> {
             boolean hx = hidden.contains(x.key), hy = hidden.contains(y.key);
@@ -439,10 +474,7 @@ public final class MainActivity extends Activity {
         LinearLayout s = column();
         s.addView(row("Hidden apps", "", null));
         s.addView(rule());
-        ListView hl = new ListView(this);
-        hl.setDivider(null);
-        hl.setSelector(android.R.color.transparent);
-        hl.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        ListView hl = plainList();
         hl.setAdapter(new BaseAdapter() {
             public int getCount() { return all.size(); }
             public Object getItem(int i) { return all.get(i); }
@@ -477,11 +509,7 @@ public final class MainActivity extends Activity {
     private void showSortDock(boolean fromSettings) {
         screen = SCREEN_SORT_DOCK;
         sortFromSettings = fromSettings;
-        if (reload) {
-            reload = false;
-            load();
-            bind();
-        }
+        reloadIfNeeded();
         LinearLayout s = column();
         s.addView(row("Sort dock", "", null));
         s.addView(rule());
@@ -577,8 +605,86 @@ public final class MainActivity extends Activity {
         dirty = true;
     }
 
+    private void showAppLimits() {
+        screen = SCREEN_APP_LIMITS;
+        limitApp = null;
+        reloadIfNeeded();
+        final ArrayList<App> all = new ArrayList<>();
+        for (App a : byKey.values()) {
+            if (a.user == null) all.add(a);
+        }
+        Collections.sort(all, (x, y) -> {
+            boolean lx = appLimits.containsKey(x.key), ly = appLimits.containsKey(y.key);
+            return lx != ly ? (lx ? -1 : 1) : x.label.compareToIgnoreCase(y.label);
+        });
+        final int pad = dp(16);
+        LinearLayout s = column();
+        s.addView(row("App limits", "", null));
+        s.addView(rule());
+        ListView lv = plainList();
+        appLimitsAdapter = new BaseAdapter() {
+            public int getCount() { return all.size(); }
+            public Object getItem(int i) { return all.get(i); }
+            public long getItemId(int i) { return i; }
+            public View getView(int i, View v, ViewGroup p) {
+                LinearLayout r = v != null ? (LinearLayout) v : (LinearLayout) row("", "", null);
+                App a = all.get(i);
+                TextView name = (TextView) r.getChildAt(0);
+                TextView val = (TextView) r.getChildAt(1);
+                name.setText(a.label);
+                String txt = appLimitRowValue(a);
+                val.setText(txt);
+                val.setPaddingRelative(txt.isEmpty() ? 0 : pad, 0, 0, 0);
+                return r;
+            }
+        };
+        lv.setAdapter(appLimitsAdapter);
+        lv.setOnItemClickListener((p, v, i, id) -> showAppLimit(all.get(i), false));
+        s.addView(lv, new LinearLayout.LayoutParams(-1, 0, 1));
+        setContentView(s);
+        syncUsage();
+    }
+
+    private void showAppLimit(final App a, final boolean fromAppMenu) {
+        screen = SCREEN_APP_LIMIT;
+        limitApp = a;
+        limitFromAppMenu = fromAppMenu;
+        appLimitsAdapter = null;
+        int cur = limitMinutes(a);
+        String status = "";
+        if (blockedKeys.contains(a.key)) status = "Blocked";
+        else if (hasUsagePermission()) {
+            long used = usageMsVal(a.cn.getPackageName());
+            if (used >= 1000L) status = "Used " + formatDuration(used);
+        }
+        LinearLayout s = column();
+        s.addView(row(a.label, status, null));
+        s.addView(rule());
+
+        LinearLayout items = new LinearLayout(this);
+        items.setOrientation(LinearLayout.VERTICAL);
+        for (final int mins : LIMIT_MINS) {
+            String label = mins == 0 ? "Off" : formatMinutes(mins);
+            String val = cur == mins ? "Current" : "";
+            items.addView(row(label, val, v -> {
+                setAppLimit(a, mins);
+                if (fromAppMenu) showAppMenu(a);
+                else showAppLimits();
+            }));
+            items.addView(rule());
+        }
+        ScrollView sv = new ScrollView(this);
+        sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.addView(items);
+        s.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+        setContentView(s);
+    }
+
     private void showAppMenu(final App a) {
         screen = SCREEN_APP_MENU;
+        appLimitsAdapter = null;
+        limitApp = null;
         LinearLayout s = column();
         s.addView(row(a.label, "", null));
         s.addView(rule());
@@ -586,7 +692,7 @@ public final class MainActivity extends Activity {
         LinearLayout items = new LinearLayout(this);
         items.setOrientation(LinearLayout.VERTICAL);
 
-        if (Build.VERSION.SDK_INT >= 25 && la != null) {
+        if (Build.VERSION.SDK_INT >= 25 && la != null && !isBlocked(a)) {
             addShortcuts(items, a);
         }
 
@@ -627,6 +733,20 @@ public final class MainActivity extends Activity {
             items.addView(rule());
         } else {
             items.addView(row("Pin to dock", "Dock full", null));
+            items.addView(rule());
+        }
+
+        if (a.user == null) {
+            items.addView(row("Daily limit", appLimitMenuValue(a), v -> {
+                if (!hasUsagePermission()) {
+                    pendingLimitsPerm = true;
+                    pendingLimitApp = a;
+                    limitFromAppMenu = true;
+                    openUsageAccessSettings();
+                } else {
+                    showAppLimit(a, true);
+                }
+            }));
             items.addView(rule());
         }
 
@@ -747,6 +867,7 @@ public final class MainActivity extends Activity {
         } else {
             iconCache = null;
         }
+        refreshLimitState();
         adapter.notifyDataSetChanged();
         bindDock();
         preloadIcons();
@@ -769,13 +890,15 @@ public final class MainActivity extends Activity {
             App a = slot < dock.size() ? byKey.get(dock.get(slot)) : null;
             String k = a == null ? null : a.key;
             Drawable d = k == null ? null : dockCache.get(k);
+            String desc = a == null ? null : (blockedKeys.contains(k) ? a.label + ", blocked" : a.label);
             if (!Objects.equals(k, cells[i].getTag()) || GEAR_KEY.equals(cells[i].getTag())
-                    || (d != null && cells[i].getDrawable() != d)) {
+                    || (d != null && cells[i].getDrawable() != d)
+                    || !Objects.equals(desc, cells[i].getContentDescription())) {
                 cells[i].setTag(k);
                 cells[i].setScaleType(ImageView.ScaleType.CENTER_INSIDE);
                 cells[i].setPadding(p, p, p, p);
                 cells[i].setImageDrawable(d);
-                cells[i].setContentDescription(a == null ? null : a.label);
+                cells[i].setContentDescription(desc);
             }
         }
     }
@@ -896,7 +1019,7 @@ public final class MainActivity extends Activity {
     }
 
     private void launch(App a) {
-        if (a == null) return;
+        if (a == null || isBlocked(a)) return;
         try {
             if (a.user != null && la != null) {
                 la.startMainActivity(a.cn, a.user, null, null);
@@ -907,6 +1030,7 @@ public final class MainActivity extends Activity {
             }
             counts.edit().putInt(a.key, ++a.n).apply();
             if (!dock.contains(a.key)) dirty = true;
+            if (showUsage || !appLimits.isEmpty()) lastUsageUptime = 0;
             closePrevious(a.cn.getPackageName());
         } catch (Exception ignored) { }
     }
@@ -1045,7 +1169,114 @@ public final class MainActivity extends Activity {
         }
     }
 
-    // ---- usage ----
+    // ---- usage & limits ----
+
+    private int limitMinutes(App a) {
+        Integer m = a == null || a.user != null ? null : appLimits.get(a.key);
+        return m == null ? 0 : m;
+    }
+
+    private long usageMsVal(String pkg) {
+        Long ms = usageMs.get(pkg);
+        return ms == null ? 0L : ms;
+    }
+
+    private boolean isBlocked(App a) {
+        if (a == null || a.user != null || !blockedKeys.contains(a.key)) return false;
+        return lastUsageDayStart == 0 || lastUsageDayStart == dayStartMs();
+    }
+
+    private void setAppLimit(App a, int mins) {
+        if (mins <= 0) {
+            appLimits.remove(a.key);
+            limits.edit().remove(a.key).apply();
+        } else {
+            appLimits.put(a.key, mins);
+            limits.edit().putInt(a.key, mins).apply();
+        }
+        refreshLimitState(hasUsagePermission());
+        dirty = true;
+        if (mins > 0 && lastUsageUptime == 0) syncUsage();
+    }
+
+    private String appLimitsSettingsValue() {
+        int active = 0;
+        for (App a : byKey.values()) {
+            if (a.user == null && appLimits.containsKey(a.key)) active++;
+        }
+        if (active > 0 && !hasUsagePermission()) return "No access";
+        return String.valueOf(active);
+    }
+
+    private String appLimitRowValue(App a) {
+        int mins = limitMinutes(a);
+        if (mins <= 0) return "";
+        if (blockedKeys.contains(a.key)) return "Blocked (" + formatMinutes(mins) + ")";
+        String r = rightLabels.get(a.key);
+        return r != null ? r : formatMinutes(mins);
+    }
+
+    private String appLimitMenuValue(App a) {
+        int mins = limitMinutes(a);
+        if (mins <= 0) return "Off";
+        if (blockedKeys.contains(a.key)) return "Blocked (" + formatMinutes(mins) + ")";
+        return formatMinutes(mins);
+    }
+
+    private void refreshLimitState() {
+        refreshLimitState(hasUsagePermission());
+    }
+
+    private void refreshLimitState(boolean perm) {
+        blockedKeys.clear();
+        rightLabels.clear();
+        for (App a : byKey.values()) {
+            if (a.user != null) continue;
+            String pkg = a.cn.getPackageName();
+            int mins = limitMinutes(a);
+            if (mins > 0) {
+                if (perm) {
+                    long used = usageMsVal(pkg);
+                    if (used >= mins * 60_000L) {
+                        blockedKeys.add(a.key);
+                        rightLabels.put(a.key, "Blocked");
+                    } else {
+                        String u = formatDuration(used);
+                        rightLabels.put(a.key, (u != null ? u : "0m") + " / " + formatMinutes(mins));
+                    }
+                } else {
+                    rightLabels.put(a.key, "No access");
+                }
+            } else if (showUsage && perm) {
+                String u = formatDuration(usageMsVal(pkg));
+                if (u != null) rightLabels.put(a.key, u);
+            }
+        }
+    }
+
+    private void clearUsageState() {
+        lastUsageUptime = 0;
+        lastUsageDayStart = 0;
+        hasSyncedUsage = false;
+        usageMs.clear();
+        rightLabels.clear();
+        blockedKeys.clear();
+    }
+
+    private void notifyUsageViews() {
+        adapter.notifyDataSetChanged();
+        bindDock();
+        if (appLimitsAdapter != null) appLimitsAdapter.notifyDataSetChanged();
+    }
+
+    private static long dayStartMs() {
+        Calendar cal = Calendar.getInstance();
+        cal.set(Calendar.HOUR_OF_DAY, 0);
+        cal.set(Calendar.MINUTE, 0);
+        cal.set(Calendar.SECOND, 0);
+        cal.set(Calendar.MILLISECOND, 0);
+        return cal.getTimeInMillis();
+    }
 
     private boolean hasUsagePermission() {
         if (aom == null) return false;
@@ -1074,33 +1305,45 @@ public final class MainActivity extends Activity {
     }
 
     private void syncUsage() {
-        if (!showUsage || !hasUsagePermission()) {
+        long today = dayStartMs();
+        if (lastUsageDayStart != 0 && lastUsageDayStart != today) {
+            clearUsageState();
+            refreshLimitState();
+            notifyUsageViews();
+        }
+        boolean perm = hasUsagePermission();
+        if ((!showUsage && appLimits.isEmpty()) || !perm) {
             ++usageGen;
-            lastUsageUptime = 0;
-            if (!usageLabels.isEmpty()) {
-                usageLabels.clear();
-                adapter.notifyDataSetChanged();
+            if (!usageMs.isEmpty() || !rightLabels.isEmpty() || !blockedKeys.isEmpty()
+                    || lastUsageUptime != 0 || lastUsageDayStart != 0) {
+                clearUsageState();
+                refreshLimitState(perm);
+                notifyUsageViews();
             }
             return;
         }
         if (usm == null || usageWorkingGen == usageGen) return;
         if (lastUsageUptime != 0 && SystemClock.uptimeMillis() - lastUsageUptime < 1000L) return;
         final int gen = ++usageGen;
+        final long queryDayStart = today;
         usageWorkingGen = gen;
         Thread w = new Thread(() -> {
-            HashMap<String, String> next = null;
+            HashMap<String, Long> next = null;
             try {
-                next = queryTodayUsage();
+                next = queryTodayUsage(queryDayStart);
             } finally {
-                final HashMap<String, String> result = next;
+                final HashMap<String, Long> result = next;
                 mainHandler.post(() -> {
                     if (usageWorkingGen == gen) usageWorkingGen = -1;
-                    if (gen != usageGen || !showUsage) return;
+                    if (gen != usageGen || (!showUsage && appLimits.isEmpty())) return;
                     lastUsageUptime = SystemClock.uptimeMillis();
-                    if (result != null && !result.equals(usageLabels)) {
-                        usageLabels.clear();
-                        usageLabels.putAll(result);
-                        adapter.notifyDataSetChanged();
+                    lastUsageDayStart = queryDayStart;
+                    if (result != null && (!hasSyncedUsage || !result.equals(usageMs))) {
+                        hasSyncedUsage = true;
+                        usageMs.clear();
+                        usageMs.putAll(result);
+                        refreshLimitState(true);
+                        notifyUsageViews();
                     }
                 });
             }
@@ -1109,16 +1352,10 @@ public final class MainActivity extends Activity {
         w.start();
     }
 
-    private HashMap<String, String> queryTodayUsage() {
-        HashMap<String, String> out = new HashMap<>();
+    private HashMap<String, Long> queryTodayUsage(long dayStart) {
+        HashMap<String, Long> out = new HashMap<>();
         if (usm == null) return out;
         long now = System.currentTimeMillis();
-        Calendar cal = Calendar.getInstance();
-        cal.set(Calendar.HOUR_OF_DAY, 0);
-        cal.set(Calendar.MINUTE, 0);
-        cal.set(Calendar.SECOND, 0);
-        cal.set(Calendar.MILLISECOND, 0);
-        long dayStart = cal.getTimeInMillis();
         UsageEvents events;
         try {
             events = usm.queryEvents(Math.max(0L, dayStart - 12L * 3600_000L), now);
@@ -1131,6 +1368,7 @@ public final class MainActivity extends Activity {
         HashMap<String, long[]> state = new HashMap<>();
         UsageEvents.Event ev = new UsageEvents.Event();
         String selfPkg = getPackageName();
+        int active = 0;
         while (events.hasNextEvent()) {
             if (!events.getNextEvent(ev)) break;
             int type = ev.getEventType();
@@ -1143,7 +1381,10 @@ public final class MainActivity extends Activity {
                     s = new long[3];
                     state.put(pkg, s);
                 }
-                if (s[2]++ == 0) s[1] = ts;
+                if (s[2]++ == 0) {
+                    s[1] = ts;
+                    active++;
+                }
             } else if (type == UsageEvents.Event.MOVE_TO_BACKGROUND) {
                 String pkg = ev.getPackageName();
                 if (pkg == null) continue;
@@ -1152,8 +1393,9 @@ public final class MainActivity extends Activity {
                     long start = Math.max(s[1], dayStart);
                     long end = Math.min(ts, now);
                     if (end > start) s[0] += end - start;
+                    active--;
                 }
-            } else if (Build.VERSION.SDK_INT >= 29 && (type == UsageEvents.Event.SCREEN_NON_INTERACTIVE
+            } else if (active > 0 && Build.VERSION.SDK_INT >= 29 && (type == UsageEvents.Event.SCREEN_NON_INTERACTIVE
                     || type == UsageEvents.Event.KEYGUARD_SHOWN
                     || type == UsageEvents.Event.DEVICE_SHUTDOWN)) {
                 for (long[] s : state.values()) {
@@ -1164,13 +1406,14 @@ public final class MainActivity extends Activity {
                         s[2] = 0;
                     }
                 }
-            } else if (Build.VERSION.SDK_INT >= 29 && type == UsageEvents.Event.DEVICE_STARTUP) {
+                active = 0;
+            } else if (active > 0 && Build.VERSION.SDK_INT >= 29 && type == UsageEvents.Event.DEVICE_STARTUP) {
                 for (long[] s : state.values()) s[2] = 0;
+                active = 0;
             }
         }
         for (Map.Entry<String, long[]> e : state.entrySet()) {
-            String formatted = formatDuration(e.getValue()[0]);
-            if (formatted != null) out.put(e.getKey(), formatted);
+            if (e.getValue()[0] > 0L) out.put(e.getKey(), e.getValue()[0]);
         }
         return out;
     }
@@ -1178,15 +1421,32 @@ public final class MainActivity extends Activity {
     private static String formatDuration(long ms) {
         if (ms < 1000L) return null;
         long mins = ms / 60_000L;
-        if (mins == 0L) return "<1m";
-        long hours = mins / 60L;
-        long rem = mins % 60L;
+        return mins == 0L ? "<1m" : formatMinutes(mins);
+    }
+
+    private static String formatMinutes(long mins) {
+        long hours = mins / 60L, rem = mins % 60L;
         if (hours == 0L) return mins + "m";
-        if (rem == 0L) return hours + "h";
-        return hours + "h " + rem + "m";
+        return rem == 0L ? hours + "h" : hours + "h " + rem + "m";
     }
 
     // ---- small view helpers ----
+
+    private void reloadIfNeeded() {
+        if (reload) {
+            reload = false;
+            load();
+            bind();
+        }
+    }
+
+    private ListView plainList() {
+        ListView lv = new ListView(this);
+        lv.setDivider(null);
+        lv.setSelector(android.R.color.transparent);
+        lv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        return lv;
+    }
 
     private int dp(int v) { return (int) (v * density + 0.5f); }
 
