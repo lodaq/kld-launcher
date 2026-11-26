@@ -73,7 +73,7 @@ public final class MainActivity extends Activity {
 
     static final class App { String key, label; ComponentName cn; UserHandle user; int n; }
     private static final class RowTag {
-        String key, timeText;
+        String key, label, timeText;
         Drawable icon;
         TextView name, time;
         int nameColor = TEXT;
@@ -339,7 +339,10 @@ public final class MainActivity extends Activity {
                 }
                 App a = shown.get(i);
                 rt.key = a.key;
-                rt.name.setText(a.label);
+                if (!a.label.equals(rt.label)) {
+                    rt.label = a.label;
+                    rt.name.setText(a.label);
+                }
                 boolean blocked = blockedKeys.contains(a.key);
                 int targetColor = blocked ? SEC : TEXT;
                 if (rt.nameColor != targetColor) {
@@ -441,17 +444,15 @@ public final class MainActivity extends Activity {
         appLimitsAdapter = null;
         limitApp = null;
         LinearLayout s = column();
-        s.addView(row("Settings", "", null));
-        s.addView(rule());
+        addRow(s, "Settings", "", null);
         LinearLayout items = new LinearLayout(this);
         items.setOrientation(LinearLayout.VERTICAL);
-        items.addView(row("Show icons", icons ? "On" : "Off", v -> {
+        addRow(items, "Show icons", icons ? "On" : "Off", v -> {
             icons = !icons;
             prefs.edit().putBoolean("icons", icons).apply();
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(icons ? "On" : "Off");
-        }));
-        items.addView(rule());
-        items.addView(row("Show time today", (showUsage && hasUsagePermission()) ? "On" : "Off", v -> {
+        });
+        addRow(items, "Show time today", (showUsage && hasUsagePermission()) ? "On" : "Off", v -> {
             if (!hasUsagePermission()) {
                 pendingUsagePerm = true;
                 openUsageAccessSettings();
@@ -464,72 +465,51 @@ public final class MainActivity extends Activity {
             ++usageGen;
             prefs.edit().putBoolean("usage", showUsage).apply();
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(showUsage ? "On" : "Off");
-        }));
-        items.addView(rule());
-        items.addView(row("Show clones", clones ? "On" : "Off", v -> {
+        });
+        addRow(items, "Show clones", clones ? "On" : "Off", v -> {
             clones = !clones;
             reload = true;
             prefs.edit().putBoolean("clones", clones).apply();
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(clones ? "On" : "Off");
-        }));
-        items.addView(rule());
-        items.addView(row("Close previous app", singleApp ? "On" : "Off", v -> {
+        });
+        addRow(items, "Close previous app", singleApp ? "On" : "Off", v -> {
             singleApp = !singleApp;
             prefs.edit().putBoolean("single", singleApp).apply();
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(singleApp ? "On" : "Off");
-        }));
-        items.addView(rule());
-        items.addView(row("Hidden apps", String.valueOf(hidden.size()), v -> showHidden()));
-        items.addView(rule());
-        items.addView(row("App limits", appLimitsSettingsValue(), v -> verifyOwner(() -> {
+        });
+        addRow(items, "Hidden apps", String.valueOf(hidden.size()), v -> showHidden());
+        addRow(items, "App limits", appLimitsSettingsValue(), v -> openLimits(null));
+        addRow(items, "Sort dock", "", v -> showSortDock(true));
+        addRow(items, "Manage apps", "", v -> {
+            try { startActivity(new Intent(Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS)); }
+            catch (Exception ignored) { }
+        });
+        addRow(items, "Phone performance boost", "", v ->
+                boostPerformance((TextView) ((LinearLayout) v).getChildAt(1)));
+        addScrolled(s, items);
+        setContentView(s);
+    }
+
+    private void openLimits(final App a) {
+        verifyOwner(() -> {
             if (!hasUsagePermission()) {
                 pendingLimitsPerm = true;
-                pendingLimitApp = null;
+                pendingLimitApp = a;
+                limitFromAppMenu = a != null;
                 openUsageAccessSettings();
+            } else if (a != null) {
+                showAppLimit(a, true);
             } else {
                 showAppLimits();
             }
-        })));
-        items.addView(rule());
-        items.addView(row("Sort dock", "", v -> showSortDock(true)));
-        items.addView(rule());
-        items.addView(row("Manage apps", "", v -> {
-            try { startActivity(new Intent(Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS)); }
-            catch (Exception ignored) { }
-        }));
-        items.addView(rule());
-        items.addView(row("Phone performance boost", "", v ->
-                boostPerformance((TextView) ((LinearLayout) v).getChildAt(1))));
-        items.addView(rule());
-        ScrollView sv = new ScrollView(this);
-        sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        sv.setVerticalScrollBarEnabled(false);
-        sv.addView(items);
-        s.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-        setContentView(s);
+        });
     }
 
     private void boostPerformance(final TextView status) {
         status.setText("Boosting");
-        final ArrayList<String> targets = new ArrayList<>(pkgs);
-        final String selfPkg = getPackageName();
-        Thread w = new Thread(() -> {
-            if (am != null) {
-                for (String p : targets) {
-                    if (!p.equals(selfPkg)) {
-                        try { am.killBackgroundProcesses(p); } catch (Exception ignored) { }
-                    }
-                }
-            }
-            System.gc();
-            mainHandler.post(() -> {
-                if (screen == SCREEN_SETTINGS && status.isAttachedToWindow()) {
-                    status.setText("Done");
-                }
-            });
-        }, "kld-boost");
-        w.setPriority(Thread.NORM_PRIORITY - 1);
-        w.start();
+        trimBackground(getPackageName(), true, () -> mainHandler.post(() -> {
+            if (screen == SCREEN_SETTINGS && status.isAttachedToWindow()) status.setText("Done");
+        }));
     }
 
     private void showHidden() {
@@ -727,26 +707,20 @@ public final class MainActivity extends Activity {
             if (used >= 1000L) status = "Used " + formatDuration(used);
         }
         LinearLayout s = column();
-        s.addView(row(a.label, status, null));
-        s.addView(rule());
+        addRow(s, a.label, status, null);
 
         LinearLayout items = new LinearLayout(this);
         items.setOrientation(LinearLayout.VERTICAL);
         for (final int mins : LIMIT_MINS) {
             String label = mins == 0 ? "Off" : formatMinutes(mins);
             String val = cur == mins ? "Current" : "";
-            items.addView(row(label, val, v -> {
+            addRow(items, label, val, v -> {
                 setAppLimit(a, mins);
                 if (fromAppMenu) showAppMenu(a);
                 else showAppLimits();
-            }));
-            items.addView(rule());
+            });
         }
-        ScrollView sv = new ScrollView(this);
-        sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        sv.setVerticalScrollBarEnabled(false);
-        sv.addView(items);
-        s.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+        addScrolled(s, items);
         setContentView(s);
     }
 
@@ -756,8 +730,7 @@ public final class MainActivity extends Activity {
         limitApp = null;
         renameApp = null;
         LinearLayout s = column();
-        s.addView(row(a.label, "", null));
-        s.addView(rule());
+        addRow(s, a.label, "", null);
 
         LinearLayout items = new LinearLayout(this);
         items.setOrientation(LinearLayout.VERTICAL);
@@ -769,61 +742,45 @@ public final class MainActivity extends Activity {
         int dockIdx = dock.indexOf(a.key);
         if (dockIdx >= 0) {
             if (dockIdx > 0) {
-                items.addView(row("Move left", "", v -> {
+                addRow(items, "Move left", "", v -> {
                     Collections.swap(dock, dockIdx, dockIdx - 1);
                     saveDock();
                     dirty = true;
                     showMain();
-                }));
-                items.addView(rule());
+                });
             }
             if (dockIdx < dock.size() - 1) {
-                items.addView(row("Move right", "", v -> {
+                addRow(items, "Move right", "", v -> {
                     Collections.swap(dock, dockIdx, dockIdx + 1);
                     saveDock();
                     dirty = true;
                     showMain();
-                }));
-                items.addView(rule());
+                });
             }
-            items.addView(row("Unpin from dock", "", v -> {
+            addRow(items, "Unpin from dock", "", v -> {
                 dock.remove(dockIdx);
                 saveDock();
                 dirty = true;
                 showMain();
-            }));
-            items.addView(rule());
+            });
         } else if (dock.size() < DOCK_MAX) {
-            items.addView(row("Pin to dock", "", v -> {
+            addRow(items, "Pin to dock", "", v -> {
                 dock.add(a.key);
                 saveDock();
                 dirty = true;
                 showMain();
-            }));
-            items.addView(rule());
+            });
         } else {
-            items.addView(row("Pin to dock", "Dock full", null));
-            items.addView(rule());
+            addRow(items, "Pin to dock", "Dock full", null);
         }
 
         if (a.user == null) {
-            items.addView(row("Daily limit", appLimitMenuValue(a), v -> verifyOwner(() -> {
-                if (!hasUsagePermission()) {
-                    pendingLimitsPerm = true;
-                    pendingLimitApp = a;
-                    limitFromAppMenu = true;
-                    openUsageAccessSettings();
-                } else {
-                    showAppLimit(a, true);
-                }
-            })));
-            items.addView(rule());
+            addRow(items, "Daily limit", appLimitMenuValue(a), v -> openLimits(a));
         }
 
-        items.addView(row("Rename", customLabels.contains(a.key) ? "Custom" : "", v -> showRename(a)));
-        items.addView(rule());
+        addRow(items, "Rename", customLabels.contains(a.key) ? "Custom" : "", v -> showRename(a));
 
-        items.addView(row("App info", "", v -> {
+        addRow(items, "App info", "", v -> {
             try {
                 if (a.user != null && la != null) {
                     la.startAppDetailsActivity(a.cn, a.user, null, null);
@@ -832,24 +789,18 @@ public final class MainActivity extends Activity {
                             Uri.fromParts("package", a.cn.getPackageName(), null)));
                 }
             } catch (Exception ignored) { }
-        }));
-        items.addView(rule());
+        });
 
         if (a.user == null && isRemovable(a.cn.getPackageName())) {
-            items.addView(row("Uninstall", "", v -> {
+            addRow(items, "Uninstall", "", v -> {
                 try {
                     startActivity(new Intent(Intent.ACTION_DELETE,
                             Uri.fromParts("package", a.cn.getPackageName(), null)));
                 } catch (Exception ignored) { }
-            }));
-            items.addView(rule());
+            });
         }
 
-        ScrollView sv = new ScrollView(this);
-        sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        sv.setVerticalScrollBarEnabled(false);
-        sv.addView(items);
-        s.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+        addScrolled(s, items);
         setContentView(s);
     }
 
@@ -1121,8 +1072,10 @@ public final class MainActivity extends Activity {
 
         dock.clear();
         String saved = prefs.getString("dock", "");
-        for (String k : saved.split(",")) {
-            if (byKey.containsKey(k) && !hidden.contains(k) && !dock.contains(k) && dock.size() < DOCK_MAX) dock.add(k);
+        if (!saved.isEmpty()) {
+            for (String k : saved.split(",")) {
+                if (byKey.containsKey(k) && !hidden.contains(k) && !dock.contains(k) && dock.size() < DOCK_MAX) dock.add(k);
+            }
         }
         String joined = TextUtils.join(",", dock);
         if (!joined.equals(saved)) saveDock(); // uninstalled/hidden apps drop out
@@ -1167,15 +1120,26 @@ public final class MainActivity extends Activity {
     }
 
     private void closePrevious(String keepPkg) {
-        if (!singleApp || am == null) return;
+        if (singleApp) trimBackground(keepPkg, false, null);
+    }
+
+    private void trimBackground(final String keepPkg, final boolean gc, final Runnable onDone) {
+        if (am == null) {
+            if (onDone != null) onDone.run();
+            return;
+        }
         final ArrayList<String> targets = new ArrayList<>(pkgs);
-        new Thread(() -> {
+        Thread w = new Thread(() -> {
             for (String p : targets) {
                 if (!p.equals(keepPkg)) {
                     try { am.killBackgroundProcesses(p); } catch (Exception ignored) { }
                 }
             }
-        }, "kld-trim").start();
+            if (gc) System.gc();
+            if (onDone != null) onDone.run();
+        }, "kld-trim");
+        w.setPriority(Thread.NORM_PRIORITY - 1);
+        w.start();
     }
 
     private void launch(App a) {
@@ -1533,7 +1497,7 @@ public final class MainActivity extends Activity {
             return;
         }
         if (usm == null || usageWorkingGen == usageGen) return;
-        if (lastUsageUptime != 0 && SystemClock.uptimeMillis() - lastUsageUptime < 1000L) return;
+        if (lastUsageUptime != 0 && SystemClock.uptimeMillis() - lastUsageUptime < 2000L) return;
         final int gen = ++usageGen;
         final long queryDayStart = today;
         usageWorkingGen = gen;
@@ -1805,6 +1769,19 @@ public final class MainActivity extends Activity {
         v.setBackgroundColor(DIV);
         v.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(1)));
         return v;
+    }
+
+    private void addRow(LinearLayout parent, String label, String value, View.OnClickListener click) {
+        parent.addView(row(label, value, click));
+        parent.addView(rule());
+    }
+
+    private void addScrolled(LinearLayout s, LinearLayout items) {
+        ScrollView sv = new ScrollView(this);
+        sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.addView(items);
+        s.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
     }
 
     private View row(String label, String value, View.OnClickListener click) {
