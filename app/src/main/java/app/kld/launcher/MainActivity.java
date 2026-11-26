@@ -65,6 +65,7 @@ public final class MainActivity extends Activity {
         Drawable icon;
         TextView name, time;
         int nameColor = TEXT;
+        float alpha = 1f;
     }
 
     private final HashMap<String, App> byKey = new HashMap<>();
@@ -312,10 +313,16 @@ public final class MainActivity extends Activity {
                 App a = shown.get(i);
                 rt.key = a.key;
                 rt.name.setText(a.label);
-                int targetColor = blockedKeys.contains(a.key) ? SEC : TEXT;
+                boolean blocked = blockedKeys.contains(a.key);
+                int targetColor = blocked ? SEC : TEXT;
                 if (rt.nameColor != targetColor) {
                     rt.nameColor = targetColor;
                     rt.name.setTextColor(targetColor);
+                }
+                float targetAlpha = blocked ? 0.5f : 1f;
+                if (rt.alpha != targetAlpha) {
+                    rt.alpha = targetAlpha;
+                    r.setAlpha(targetAlpha);
                 }
                 Drawable target = null;
                 if (iconCache != null) {
@@ -884,13 +891,15 @@ public final class MainActivity extends Activity {
                     cells[i].setImageResource(R.drawable.ic_settings);
                     cells[i].setContentDescription("Settings");
                 }
+                if (cells[i].getImageAlpha() != 255) cells[i].setImageAlpha(255);
                 continue;
             }
             int slot = slotFor(i);
             App a = slot < dock.size() ? byKey.get(dock.get(slot)) : null;
             String k = a == null ? null : a.key;
             Drawable d = k == null ? null : dockCache.get(k);
-            String desc = a == null ? null : (blockedKeys.contains(k) ? a.label + ", blocked" : a.label);
+            boolean blocked = a != null && blockedKeys.contains(k);
+            String desc = a == null ? null : (blocked ? a.label + ", blocked" : a.label);
             if (!Objects.equals(k, cells[i].getTag()) || GEAR_KEY.equals(cells[i].getTag())
                     || (d != null && cells[i].getDrawable() != d)
                     || !Objects.equals(desc, cells[i].getContentDescription())) {
@@ -900,6 +909,8 @@ public final class MainActivity extends Activity {
                 cells[i].setImageDrawable(d);
                 cells[i].setContentDescription(desc);
             }
+            int targetAlpha = blocked ? 90 : 255;
+            if (cells[i].getImageAlpha() != targetAlpha) cells[i].setImageAlpha(targetAlpha);
         }
     }
 
