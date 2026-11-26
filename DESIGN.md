@@ -6,7 +6,7 @@ Principle: the launcher is a list of words and a row of icons. Anything that doe
 - Zero dependencies. Java only. No AndroidX, no Kotlin.
 - No animation of any kind: no transitions, no ripple, no fades, no layout animation.
 - Icons exist only in the Dock, and in the App list when Show icons is On (default Off).
-- No threads, services, receivers or background work. At idle the app does nothing.
+- No services, receivers, or idle background work. At idle the app does nothing; transient short-lived worker threads run only to rasterize icons when loading/toggling `Show icons` or to close previous background processes when `Close previous app` is On.
 
 ## Colour (ARGB constants at the top of MainActivity)
 - BACKGROUND 0xFF000000 (true black)
@@ -49,9 +49,9 @@ No bold, italic, letter spacing or all caps.
 - No empty states, toasts or dialogs. Swallow errors silently.
 
 ## Memory rules for icons
-- Dock icons load in onStart (at most five) and are released in onStop.
-- List icons load only for visible rows, through a bounded cache (32 entries) that exists only while Show icons is On and is released in onStop.
-- Never hold icons while the launcher is hidden.
+- Dock icons (at most five) and List icons (when Show icons is On) are pre-rasterized to `40dp` / `32dp` bitmaps on a short-lived worker thread so `getView` and app launch never block the UI thread.
+- List icons use a cache sized for all installed apps so fast scrolling never hits IPC cache misses.
+- Caches stay warm across normal app switches for zero-latency Home return and are released under OS memory pressure (`onTrimMemory`) or when Show icons is turned Off.
 
 ## Code rules
 - One Activity. Switch screens by swapping the content view.

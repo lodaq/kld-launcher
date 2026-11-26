@@ -20,7 +20,7 @@ This document tracks the exact technology stack and agent skills used in `kld-la
 * **Runtime Architecture & Constraints:**
   * Single `Activity` ([MainActivity.java](./app/src/main/java/app/kld/launcher/MainActivity.java), `launchMode="singleTask"`, `stateNotNeeded="true"`)
   * `allowBackup="false"`, `supportsRtl="true"`, `Theme.Black.NoTitleBar`, `KILL_BACKGROUND_PROCESSES` (used only when `Close previous app` is On)
-  * No background threads, services, broadcast receivers, or animations ([DESIGN.md](./DESIGN.md))
+  * No services, broadcast receivers, or animations; at idle there is zero background work (short-lived worker threads run only transiently during icon pre-loading or `Close previous app`) ([DESIGN.md](./DESIGN.md))
 
 ---
 

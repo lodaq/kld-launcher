@@ -13,11 +13,18 @@ import android.content.pm.LauncherApps;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ShortcutInfo;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Process;
+import android.os.SystemClock;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
@@ -46,6 +53,7 @@ public final class MainActivity extends Activity {
     private static final String GEAR_KEY = "_gear";
 
     static final class App { String key, label; ComponentName cn; UserHandle user; int n; }
+    private static final class RowTag { String key; Drawable icon; }
 
     private final HashMap<String, App> byKey = new HashMap<>();
     private final HashSet<String> pkgs = new HashSet<>();
@@ -53,17 +61,23 @@ public final class MainActivity extends Activity {
     private final ArrayList<String> dock = new ArrayList<>(); // docked keys, no gaps
     private final HashSet<String> hidden = new HashSet<>();
     private final ImageView[] cells = new ImageView[DOCK_CELLS];
+    private final LruCache<String, Drawable> dockCache = new LruCache<>(DOCK_MAX + 4);
     private SharedPreferences counts, labels, prefs;
     private PackageManager pm;
     private ActivityManager am;
     private LauncherApps la;
     private UserManager um;
-    private LruCache<String, Drawable> iconCache; // non-null only while Show icons is On and visible
+    private Handler mainHandler;
+    private LauncherApps.Callback pkgCb;
+    private LruCache<String, Drawable> iconCache; // non-null only while Show icons is On
+    private Drawable iconPlaceholder;
     private LinearLayout main;
     private ListView list;
     private BaseAdapter adapter;
     private boolean icons, clones, singleApp, dirty, reload, sortFromSettings;
-    private int screen, gearPos;
+    private String loadedLoc = "";
+    private int screen, gearPos, listIconPx, dockIconPx;
+    private volatile int iconGen;
     private float density;
 
     @Override protected void onCreate(Bundle b) {
@@ -72,7 +86,12 @@ public final class MainActivity extends Activity {
         am = getSystemService(ActivityManager.class);
         la = getSystemService(LauncherApps.class);
         um = getSystemService(UserManager.class);
+        mainHandler = new Handler(Looper.getMainLooper());
         density = getResources().getDisplayMetrics().density;
+        listIconPx = dp(32);
+        dockIconPx = dp(40);
+        iconPlaceholder = new ColorDrawable(0);
+        iconPlaceholder.setBounds(0, 0, listIconPx, listIconPx);
         counts = getSharedPreferences("c", 0);
         labels = getSharedPreferences("l", 0);
         prefs = getSharedPreferences("s", 0); // keys: "icons", "clones", "single", "dock", "gear", "hidden"
@@ -83,26 +102,73 @@ public final class MainActivity extends Activity {
         hidden.addAll(prefs.getStringSet("hidden", Collections.emptySet()));
         main = buildMain();
         setContentView(main);
+        if (la != null) {
+            pkgCb = new LauncherApps.Callback() {
+                public void onPackageRemoved(String p, UserHandle u) { invalidatePkg(p); }
+                public void onPackageAdded(String p, UserHandle u) { invalidatePkg(p); }
+                public void onPackageChanged(String p, UserHandle u) { invalidatePkg(p); }
+                public void onPackagesAvailable(String[] ps, UserHandle u, boolean r) {
+                    for (String p : ps) invalidatePkg(p);
+                }
+                public void onPackagesUnavailable(String[] ps, UserHandle u, boolean r) {
+                    for (String p : ps) invalidatePkg(p);
+                }
+            };
+            try { la.registerCallback(pkgCb); } catch (Exception ignored) { pkgCb = null; }
+        }
         if (b == null) askDefaultHome();
     }
 
     @Override protected void onStart() {
         super.onStart();
-        load();
-        bind();
-        dirty = reload = false;
+        if (screen == SCREEN_MAIN || byKey.isEmpty()) syncIfNeeded();
     }
 
-    @Override protected void onStop() {
-        super.onStop();
-        for (ImageView c : cells) {
-            c.setImageDrawable(null);
-            c.setTag(null);
+    @Override protected void onResume() {
+        super.onResume();
+        if (screen == SCREEN_MAIN) syncIfNeeded();
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && screen == SCREEN_MAIN && (reload || dirty)) syncIfNeeded();
+    }
+
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_MODERATE || level == TRIM_MEMORY_RUNNING_CRITICAL) {
+            ++iconGen;
+            if (iconCache != null) {
+                iconCache = null;
+                for (int i = 0, c = list.getChildCount(); i < c; i++) {
+                    TextView tv = (TextView) list.getChildAt(i);
+                    RowTag rt = (RowTag) tv.getTag();
+                    if (rt != null) rt.icon = null;
+                    tv.setCompoundDrawablesRelative(null, null, null, null);
+                }
+            }
+            if (level >= TRIM_MEMORY_COMPLETE) {
+                dockCache.evictAll();
+                for (ImageView cell : cells) {
+                    if (!GEAR_KEY.equals(cell.getTag())) {
+                        cell.setImageDrawable(null);
+                        cell.setTag(null);
+                    }
+                }
+                dirty = true;
+            }
         }
+    }
+
+    @Override protected void onDestroy() {
+        ++iconGen;
+        if (la != null && pkgCb != null) {
+            try { la.unregisterCallback(pkgCb); } catch (Exception ignored) { }
+        }
+        if (mainHandler != null) mainHandler.removeCallbacksAndMessages(null);
         iconCache = null;
-        for (int i = 0, c = list.getChildCount(); i < c; i++) {
-            ((TextView) list.getChildAt(i)).setCompoundDrawablesRelative(null, null, null, null);
-        }
+        dockCache.evictAll();
+        super.onDestroy();
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -155,6 +221,7 @@ public final class MainActivity extends Activity {
             public long getItemId(int i) { return i; }
             public View getView(int i, View v, ViewGroup p) {
                 TextView t = (TextView) v;
+                RowTag rt;
                 if (t == null) {
                     t = new TextView(MainActivity.this);
                     t.setTextSize(20);
@@ -164,15 +231,27 @@ public final class MainActivity extends Activity {
                     t.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
                     t.setPadding(pad, pad, pad, pad);
                     t.setCompoundDrawablePadding(pad);
+                    rt = new RowTag();
+                    t.setTag(rt);
+                } else {
+                    rt = (RowTag) t.getTag();
                 }
                 App a = shown.get(i);
+                rt.key = a.key;
                 t.setText(a.label);
-                t.setCompoundDrawablesRelative(iconCache == null ? null : listIcon(a), null, null, null);
+                Drawable target = null;
+                if (iconCache != null) {
+                    Drawable d = iconCache.get(a.key);
+                    target = d != null ? d : iconPlaceholder;
+                }
+                if (rt.icon != target) {
+                    rt.icon = target;
+                    t.setCompoundDrawablesRelative(target, null, null, null);
+                }
                 return t;
             }
         };
         list.setAdapter(adapter);
-        list.setRecyclerListener(v -> ((TextView) v).setCompoundDrawablesRelative(null, null, null, null));
         list.setOnItemClickListener((p, v, i, id) -> launch(shown.get(i)));
         list.setOnItemLongClickListener((p, v, i, id) -> { showAppMenu(shown.get(i)); return true; });
         m.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -221,8 +300,15 @@ public final class MainActivity extends Activity {
             dirty = false;
             bind();
         } else if (icons != (iconCache != null)) {
-            iconCache = icons ? new LruCache<>(32) : null;
-            adapter.notifyDataSetChanged();
+            if (icons) {
+                iconCache = new LruCache<>(Math.max(128, byKey.size() + 32));
+                adapter.notifyDataSetChanged();
+                preloadIcons();
+            } else {
+                ++iconGen;
+                iconCache = null;
+                adapter.notifyDataSetChanged();
+            }
         }
     }
 
@@ -534,8 +620,8 @@ public final class MainActivity extends Activity {
                 if (TextUtils.isEmpty(lbl)) lbl = si.getLongLabel();
                 if (TextUtils.isEmpty(lbl)) continue;
                 View r = row(lbl.toString(), "", v -> {
-                    closePrevious(a.cn.getPackageName());
                     try { la.startShortcut(si, null, null); } catch (Exception ignored) { }
+                    closePrevious(a.cn.getPackageName());
                     showMain();
                 });
                 if (icons) {
@@ -577,23 +663,24 @@ public final class MainActivity extends Activity {
             if (!dock.contains(app.key) && !hidden.contains(app.key)) shown.add(app);
         }
         Collections.sort(shown, (x, y) -> x.n != y.n ? y.n - x.n : x.label.compareToIgnoreCase(y.label));
-        if (icons && iconCache == null) iconCache = new LruCache<>(32);
-        else if (!icons) iconCache = null;
+        ++iconGen;
+        if (icons) {
+            int cap = Math.max(128, byKey.size() + 32);
+            if (iconCache == null) iconCache = new LruCache<>(cap);
+            else if (iconCache.maxSize() < cap) iconCache.resize(cap);
+        } else {
+            iconCache = null;
+        }
         adapter.notifyDataSetChanged();
         bindDock();
+        preloadIcons();
     }
 
     private void bindDock() {
-        String[] oldKeys = new String[DOCK_CELLS];
-        Drawable[] oldDrawables = new Drawable[DOCK_CELLS];
-        for (int i = 0; i < DOCK_CELLS; i++) {
-            String t = (String) cells[i].getTag();
-            oldKeys[i] = t;
-            if (!GEAR_KEY.equals(t)) oldDrawables[i] = cells[i].getDrawable();
-        }
+        int p = dp(8);
         for (int i = 0; i < DOCK_CELLS; i++) {
             if (i == gearPos) {
-                if (!GEAR_KEY.equals(oldKeys[i])) {
+                if (!GEAR_KEY.equals(cells[i].getTag())) {
                     cells[i].setTag(GEAR_KEY);
                     cells[i].setScaleType(ImageView.ScaleType.CENTER);
                     cells[i].setPadding(0, 0, 0, 0);
@@ -605,26 +692,14 @@ public final class MainActivity extends Activity {
             int slot = slotFor(i);
             App a = slot < dock.size() ? byKey.get(dock.get(slot)) : null;
             String k = a == null ? null : a.key;
-            if (!Objects.equals(k, oldKeys[i]) || GEAR_KEY.equals(oldKeys[i])) {
-                Drawable d = null;
-                if (a != null) {
-                    for (int j = 0; j < DOCK_CELLS; j++) {
-                        if (k.equals(oldKeys[j]) && oldDrawables[j] != null) {
-                            d = oldDrawables[j];
-                            oldDrawables[j] = null;
-                            break;
-                        }
-                    }
-                    if (d == null) d = icon(a);
-                }
-                int p = dp(8);
+            Drawable d = k == null ? null : dockCache.get(k);
+            if (!Objects.equals(k, cells[i].getTag()) || GEAR_KEY.equals(cells[i].getTag())
+                    || (d != null && cells[i].getDrawable() != d)) {
                 cells[i].setTag(k);
                 cells[i].setScaleType(ImageView.ScaleType.CENTER_INSIDE);
                 cells[i].setPadding(p, p, p, p);
                 cells[i].setImageDrawable(d);
                 cells[i].setContentDescription(a == null ? null : a.label);
-            } else if (k != null) {
-                oldDrawables[i] = null;
             }
         }
     }
@@ -633,6 +708,7 @@ public final class MainActivity extends Activity {
         Intent q = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
         // Cached names are only valid for the language they were loaded in.
         String loc = getResources().getConfiguration().getLocales().get(0).toLanguageTag();
+        loadedLoc = loc;
         if (!loc.equals(labels.getString("_loc", ""))) labels.edit().clear().putString("_loc", loc).apply();
         SharedPreferences.Editor ed = null;
         byKey.clear();
@@ -693,19 +769,58 @@ public final class MainActivity extends Activity {
         if (!joined.equals(saved)) saveDock(); // uninstalled/hidden apps drop out
     }
 
-    private void closePrevious(String keepPkg) {
-        if (!singleApp || am == null) return;
-        for (String p : pkgs) {
-            if (!p.equals(keepPkg)) {
-                try { am.killBackgroundProcesses(p); } catch (Exception ignored) { }
+    private void syncIfNeeded() {
+        String loc = getResources().getConfiguration().getLocales().get(0).toLanguageTag();
+        if (!loc.equals(loadedLoc)) reload = true;
+        if (byKey.isEmpty() || reload) {
+            reload = dirty = false;
+            load();
+            bind();
+        } else if (dirty) {
+            dirty = false;
+            bind();
+        } else if (icons && iconCache == null) {
+            ++iconGen;
+            iconCache = new LruCache<>(Math.max(128, byKey.size() + 32));
+            adapter.notifyDataSetChanged();
+            preloadIcons();
+        } else {
+            preloadIcons();
+        }
+    }
+
+    private void invalidatePkg(String pkg) {
+        if (pkg == null) return;
+        SharedPreferences.Editor ed = null;
+        for (App a : byKey.values()) {
+            if (pkg.equals(a.cn.getPackageName())) {
+                if (iconCache != null) iconCache.remove(a.key);
+                dockCache.remove(a.key);
+                if (labels.contains(a.key)) {
+                    if (ed == null) ed = labels.edit();
+                    ed.remove(a.key);
+                }
             }
         }
+        if (ed != null) ed.apply();
+        reload = true;
+    }
+
+    private void closePrevious(String keepPkg) {
+        if (!singleApp || am == null) return;
+        final ArrayList<String> targets = new ArrayList<>(pkgs);
+        new Thread(() -> {
+            for (String p : targets) {
+                if (!p.equals(keepPkg)) {
+                    try { am.killBackgroundProcesses(p); } catch (Exception ignored) { }
+                }
+            }
+        }, "kld-trim").start();
     }
 
     private void launch(App a) {
         if (a == null) return;
         try {
-            closePrevious(a.cn.getPackageName());
             if (a.user != null && la != null) {
                 la.startMainActivity(a.cn, a.user, null, null);
             } else {
@@ -714,10 +829,14 @@ public final class MainActivity extends Activity {
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED));
             }
             counts.edit().putInt(a.key, ++a.n).apply();
+            if (!dock.contains(a.key)) dirty = true;
+            closePrevious(a.cn.getPackageName());
         } catch (Exception ignored) { }
     }
 
     // ---- icons ----
+
+    private volatile int iconWorkingGen = -1;
 
     private Drawable icon(App a) {
         try {
@@ -733,13 +852,121 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private Drawable listIcon(App a) {
-        Drawable d = iconCache.get(a.key);
-        if (d == null && (d = icon(a)) != null) {
-            d.setBounds(0, 0, dp(32), dp(32));
-            iconCache.put(a.key, d);
+    private Drawable rasterize(Drawable d, int px) {
+        if (d == null) return null;
+        try {
+            int iw = d.getIntrinsicWidth(), ih = d.getIntrinsicHeight();
+            int w = px, h = px;
+            if (iw > 0 && ih > 0 && iw != ih) {
+                if (iw > ih) h = Math.max(1, px * ih / iw);
+                else w = Math.max(1, px * iw / ih);
+            }
+            int dx = (px - w) / 2, dy = (px - h) / 2;
+            Bitmap bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(bmp);
+            d.setBounds(dx, dy, dx + w, dy + h);
+            d.draw(c);
+            BitmapDrawable bd = new BitmapDrawable(getResources(), bmp);
+            bd.setBounds(0, 0, px, px);
+            return bd;
+        } catch (Throwable ignored) {
+            return d;
         }
-        return d;
+    }
+
+    private void preloadIcons() {
+        final int gen = iconGen;
+        if (iconWorkingGen == gen) return;
+
+        final ArrayList<App> dockTodo = new ArrayList<>(dock.size());
+        for (String k : dock) {
+            App a = byKey.get(k);
+            if (a != null && dockCache.get(k) == null) dockTodo.add(a);
+        }
+
+        final LruCache<String, Drawable> lCache = iconCache;
+        final ArrayList<App> listTodo = new ArrayList<>(lCache == null ? 0 : shown.size());
+        if (lCache != null && !shown.isEmpty()) {
+            int n = shown.size();
+            int first = list.getFirstVisiblePosition();
+            int last = list.getLastVisiblePosition();
+            if (first < 0 || last < first) {
+                first = 0;
+                last = Math.min(n - 1, 20);
+            } else {
+                first = Math.max(0, first);
+                last = Math.min(n - 1, last + 4);
+            }
+            for (int i = first; i <= last; i++) {
+                App a = shown.get(i);
+                if (lCache.get(a.key) == null) listTodo.add(a);
+            }
+            for (int i = 0; i < n; i++) {
+                if (i >= first && i <= last) continue;
+                App a = shown.get(i);
+                if (lCache.get(a.key) == null) listTodo.add(a);
+            }
+        }
+
+        if (dockTodo.isEmpty() && listTodo.isEmpty()) return;
+
+        iconWorkingGen = gen;
+        final int listPx = listIconPx, dockPx = dockIconPx;
+        Thread w = new Thread(() -> {
+            try {
+                for (App a : dockTodo) {
+                    if (iconGen != gen) return;
+                    if (dockCache.get(a.key) != null) continue;
+                    Drawable d = rasterize(icon(a), dockPx);
+                    if (d != null && iconGen == gen) dockCache.put(a.key, d);
+                }
+                if (!dockTodo.isEmpty() && iconGen == gen) {
+                    mainHandler.post(() -> {
+                        if (iconGen == gen) bindDock();
+                    });
+                }
+                if (lCache == null || listTodo.isEmpty()) return;
+                boolean uiPending = false;
+                long lastPost = 0;
+                for (int i = 0, total = listTodo.size(); i < total; i++) {
+                    if (iconGen != gen || iconCache != lCache) return;
+                    App a = listTodo.get(i);
+                    if (lCache.get(a.key) != null) continue;
+                    Drawable d = rasterize(icon(a), listPx);
+                    if (d != null && iconGen == gen && iconCache == lCache) {
+                        lCache.put(a.key, d);
+                        uiPending = true;
+                    }
+                    long now = SystemClock.uptimeMillis();
+                    if (uiPending && (i == total - 1 || now - lastPost >= 24)) {
+                        uiPending = false;
+                        lastPost = now;
+                        mainHandler.post(() -> {
+                            if (iconGen == gen && iconCache == lCache) refreshVisibleListIcons();
+                        });
+                    }
+                }
+            } finally {
+                if (iconWorkingGen == gen) iconWorkingGen = -1;
+            }
+        }, "kld-icons");
+        w.setPriority(Thread.NORM_PRIORITY - 1);
+        w.start();
+    }
+
+    private void refreshVisibleListIcons() {
+        if (iconCache == null) return;
+        for (int i = 0, c = list.getChildCount(); i < c; i++) {
+            TextView tv = (TextView) list.getChildAt(i);
+            RowTag rt = (RowTag) tv.getTag();
+            if (rt != null && rt.icon == iconPlaceholder) {
+                Drawable d = iconCache.get(rt.key);
+                if (d != null) {
+                    rt.icon = d;
+                    tv.setCompoundDrawablesRelative(d, null, null, null);
+                }
+            }
+        }
     }
 
     // ---- small view helpers ----

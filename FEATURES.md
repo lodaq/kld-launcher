@@ -27,6 +27,6 @@ Each checkbox is a single, standalone feature task.
 - [ ] **Fullscreen / status bar toggle**: Add a Settings toggle to show or hide the system status bar.
 
 ## System & Maintenance
-- [ ] **Optimize icon loading / scrolling**: Improve performance and eliminate scroll lag when `Show icons` is On (e.g. avoid synchronous main-thread `PackageManager.getActivityIcon()` / bitmap decoding during `ListView` scrolling).
+- [x] **Optimize icon loading / scrolling**: Improve performance and eliminate scroll lag when `Show icons` is On (e.g. avoid synchronous main-thread `PackageManager.getActivityIcon()` / bitmap decoding during `ListView` scrolling).
 - [ ] **Export / import settings**: Add Settings actions to export and restore Dock, hidden apps, custom names, Launch counts, and toggles using Android's system document picker (since `allowBackup` is disabled).
 - [ ] **Phone performance boost**: Add a button inside Settings to improve the performance of the phone (within Android's unprivileged launcher constraints, e.g. clearing launcher caches or jumping to system device-care / running-services settings).
