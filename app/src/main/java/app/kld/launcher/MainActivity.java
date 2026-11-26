@@ -27,6 +27,7 @@ import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Objects;
 
 public final class MainActivity extends Activity {
     private static final int BG = 0xFF000000, TEXT = 0xFFFFFFFF, SEC = 0xFF8A8A8A, DIV = 0xFF222222;
@@ -62,17 +63,25 @@ public final class MainActivity extends Activity {
 
     @Override protected void onStart() {
         super.onStart();
-        refresh();
+        load();
+        bind();
     }
 
     @Override protected void onStop() {
         super.onStop();
-        for (ImageView s : slots) s.setImageDrawable(null);
-        if (iconCache != null) { iconCache = null; list.setAdapter(adapter); } // drops recycled row icons
+        for (ImageView s : slots) {
+            s.setImageDrawable(null);
+            s.setTag(null);
+        }
+        iconCache = null;
+        for (int i = 0, c = list.getChildCount(); i < c; i++) {
+            ((TextView) list.getChildAt(i)).setCompoundDrawablesRelative(null, null, null, null);
+        }
     }
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        setIntent(intent);
         if (inSettings) showMain();
         list.setSelection(0);
     }
@@ -90,7 +99,7 @@ public final class MainActivity extends Activity {
             } else {
                 ResolveInfo r = pm.resolveActivity(
                         new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0);
-                if (r == null || !getPackageName().equals(r.activityInfo.packageName)) {
+                if (r == null || r.activityInfo == null || !getPackageName().equals(r.activityInfo.packageName)) {
                     startActivity(new Intent(Settings.ACTION_HOME_SETTINGS));
                 }
             }
@@ -129,12 +138,13 @@ public final class MainActivity extends Activity {
             }
         };
         list.setAdapter(adapter);
+        list.setRecyclerListener(v -> ((TextView) v).setCompoundDrawablesRelative(null, null, null, null));
         list.setOnItemClickListener((p, v, i, id) -> launch(shown.get(i)));
         list.setOnItemLongClickListener((p, v, i, id) -> { startDrag(v, shown.get(i).key); return true; });
         list.setOnDragListener(target(-1));
         m.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        m.addView(rule(), new LinearLayout.LayoutParams(-1, dp(1)));
+        m.addView(rule());
 
         LinearLayout bar = new LinearLayout(this);
         bar.setOnDragListener(target(DOCK_MAX));
@@ -163,39 +173,52 @@ public final class MainActivity extends Activity {
     private void showMain() {
         inSettings = false;
         setContentView(main);
-        refresh();
+        if (icons != (iconCache != null)) {
+            iconCache = icons ? new LruCache<>(32) : null;
+            adapter.notifyDataSetChanged();
+        }
     }
 
     private void showSettings() {
         inSettings = true;
         LinearLayout s = column();
         s.addView(row("Settings", "", null));
-        s.addView(rule(), new LinearLayout.LayoutParams(-1, dp(1)));
+        s.addView(rule());
         s.addView(row("Show icons", icons ? "On" : "Off", v -> {
             icons = !icons;
             prefs.edit().putBoolean("icons", icons).apply();
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(icons ? "On" : "Off");
         }));
-        s.addView(rule(), new LinearLayout.LayoutParams(-1, dp(1)));
+        s.addView(rule());
         s.addView(row("Manage apps", "", v -> {
             try { startActivity(new Intent(Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS)); }
             catch (Exception ignored) { }
         }));
-        s.addView(rule(), new LinearLayout.LayoutParams(-1, dp(1)));
+        s.addView(rule());
         setContentView(s);
     }
 
     // ---- data ----
 
-    private void refresh() {
-        load();
+    private void bind() {
+        shown.clear();
+        for (App app : byKey.values()) if (!dock.contains(app.key)) shown.add(app);
+        Collections.sort(shown, (x, y) -> x.n != y.n ? y.n - x.n : x.label.compareToIgnoreCase(y.label));
         if (icons && iconCache == null) iconCache = new LruCache<>(32);
         else if (!icons) iconCache = null;
         adapter.notifyDataSetChanged();
+        bindDock();
+    }
+
+    private void bindDock() {
         for (int i = 0; i < DOCK_MAX; i++) {
             App a = i < dock.size() ? byKey.get(dock.get(i)) : null;
-            slots[i].setImageDrawable(a == null ? null : icon(a.cn));
-            slots[i].setContentDescription(a == null ? null : a.label);
+            String k = a == null ? null : a.key;
+            if (!Objects.equals(k, slots[i].getTag())) {
+                slots[i].setTag(k);
+                slots[i].setImageDrawable(a == null ? null : icon(a.cn));
+                slots[i].setContentDescription(a == null ? null : a.label);
+            }
         }
     }
 
@@ -230,10 +253,6 @@ public final class MainActivity extends Activity {
         }
         String joined = TextUtils.join(",", dock);
         if (!joined.equals(saved)) prefs.edit().putString("dock", joined).apply(); // uninstalled apps drop out
-
-        shown.clear();
-        for (App app : byKey.values()) if (!dock.contains(app.key)) shown.add(app);
-        Collections.sort(shown, (x, y) -> x.n != y.n ? y.n - x.n : x.label.compareToIgnoreCase(y.label));
     }
 
     private void launch(App a) {
@@ -265,11 +284,13 @@ public final class MainActivity extends Activity {
     private void drop(String key, int t) {
         if (!byKey.containsKey(key)) return;
         int from = dock.indexOf(key);
+        boolean listChanged = true;
         if (t < 0) {                                   // onto the App list: undock
             if (from < 0) return;
             dock.remove(from);
         } else if (t < dock.size()) {                  // onto an occupied slot: swap
-            if (from >= 0) Collections.swap(dock, from, t);
+            if (from == t) return;
+            if (from >= 0) { Collections.swap(dock, from, t); listChanged = false; }
             else dock.set(t, key);                     // displaced App returns to the list
         } else if (from < 0 && dock.size() < DOCK_MAX) { // free area: leftmost free slot
             dock.add(key);
@@ -277,7 +298,7 @@ public final class MainActivity extends Activity {
             return;
         }
         prefs.edit().putString("dock", TextUtils.join(",", dock)).apply();
-        refresh();
+        if (listChanged) bind(); else bindDock();
     }
 
     // ---- icons ----
@@ -314,6 +335,7 @@ public final class MainActivity extends Activity {
     private View rule() {
         View v = new View(this);
         v.setBackgroundColor(DIV);
+        v.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(1)));
         return v;
     }
 

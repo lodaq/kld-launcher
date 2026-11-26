@@ -12,6 +12,7 @@ This document tracks the exact technology stack and agent skills used in `kld-la
 * **Build Flags & Release Optimization:**
   * `isMinifyEnabled = true` (R8 code shrinking & optimization)
   * `isShrinkResources = true` (resource shrinking)
+  * `proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")`
   * `buildConfig = false`
   * `android.nonTransitiveRClass=true`
   * `org.gradle.jvmargs=-Xmx2g`
