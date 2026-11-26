@@ -1,0 +1,61 @@
+{
+  "version": 2,
+  "skills": {
+    "android-benchmark-comparison": {
+      "source": "chrisbanes/skills",
+      "commit": "cd87c5f097e11e82154a87332ab0390fd23555c2",
+      "sourceType": "github",
+      "skillPath": "skills/android-benchmark-comparison/SKILL.md",
+      "computedHash": "6b9fd4c90515c09b59bedf1fafd30c7cd369ad5779c3ae1af8bb9aae9a91a34a"
+    },
+    "android-cli": {
+      "source": "android/skills",
+      "commit": "7f7b21730a605d112ca9f79b6e40105ce7b670ee",
+      "sourceType": "github",
+      "skillPath": "devtools/android-cli/SKILL.md",
+      "computedHash": "8a982e9380aaa40ae06c955308c156942f4937071cd1e12c3d1cf2310d7c00c2"
+    },
+    "android-intent-security": {
+      "source": "android/skills",
+      "commit": "7f7b21730a605d112ca9f79b6e40105ce7b670ee",
+      "sourceType": "github",
+      "skillPath": "security/android-intent-security/SKILL.md",
+      "computedHash": "41a3b30d26f74c13b6b0471eb750b7a866244a6bd2774e2af5ccbe1ae5cf385f"
+    },
+    "android-profiler": {
+      "source": "android/skills",
+      "commit": "7f7b21730a605d112ca9f79b6e40105ce7b670ee",
+      "sourceType": "github",
+      "skillPath": "profilers/android-profiler/SKILL.md",
+      "computedHash": "8dfcfca81310cb187fe61381d3c6f7933f5eb1915ce06a67707fbbb23f318fe1"
+    },
+    "anr-audit-and-fix": {
+      "source": "android/skills",
+      "commit": "7f7b21730a605d112ca9f79b6e40105ce7b670ee",
+      "sourceType": "github",
+      "skillPath": "performance/anr-audit-and-fix/SKILL.md",
+      "computedHash": "ab13efcb3b7816b3a0bcbe54245383c85973c87173cb60f3087ee31f2619a54e"
+    },
+    "gradle-run": {
+      "source": "chrisbanes/skills",
+      "commit": "cd87c5f097e11e82154a87332ab0390fd23555c2",
+      "sourceType": "github",
+      "skillPath": "skills/gradle-run/SKILL.md",
+      "computedHash": "01ef62ee590ce73e9ffc61f5302602242171410e5715ebb9565d1368ea924fa6"
+    },
+    "r8-analyzer": {
+      "source": "android/skills",
+      "commit": "7f7b21730a605d112ca9f79b6e40105ce7b670ee",
+      "sourceType": "github",
+      "skillPath": "performance/r8-analyzer/SKILL.md",
+      "computedHash": "fbd0f9f9e434b0732302d0de0ba69606ef3a5806478d35aa128e09fe4828f276"
+    },
+    "simplify-changes": {
+      "source": "chrisbanes/skills",
+      "commit": "cd87c5f097e11e82154a87332ab0390fd23555c2",
+      "sourceType": "github",
+      "skillPath": "skills/simplify-changes/SKILL.md",
+      "computedHash": "55f5900beb13a3d4fab3d7866b714f14a765026ecd62c6e08da51252bc06635d"
+    }
+  }
+}
