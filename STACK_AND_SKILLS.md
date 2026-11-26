@@ -7,14 +7,14 @@ This document tracks the exact technology stack and agent skills used in `kld-la
 * **Language:** Java 17 (`JavaVersion.VERSION_17`), no Kotlin
 * **UI & Platform APIs:** Pure Android Framework (`Activity`, `ListView`, `BaseAdapter`, `LinearLayout`, `TextView`, `ImageView`, `LruCache`, `RoleManager`, `PackageManager`, `SharedPreferences`) with programmatic views (no layout XML) and VectorDrawables (`ic_launcher.xml`, `ic_launcher_fg.xml`, `ic_settings.xml`)
 * **Dependencies:** Zero third-party libraries, zero AndroidX, zero Jetpack Compose (enforced by [docs/adr/0002-java-only-zero-dependencies.md](./docs/adr/0002-java-only-zero-dependencies.md))
-* **Build System:** Gradle `8.14.3` (Kotlin DSL), Android Gradle Plugin `8.7.3`
+* **Build System:** Gradle `9.6.0` (Kotlin DSL), Android Gradle Plugin `9.5.3`
 * **Android SDK Targets:** `compileSdk 35`, `minSdk 24`, `targetSdk 35`
 * **Build Flags & Release Optimization:**
-  * `isMinifyEnabled = true` (R8 code shrinking & optimization)
-  * `isShrinkResources = true` (resource shrinking)
-  * `proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")`
+  * `optimization { enable = true }` (R8 code shrinking & optimization, optimized resource shrinking, and `proguard-android-optimize.txt`)
+  * `proguardFiles("proguard-rules.pro")`
   * `buildConfig = false`
   * `android.nonTransitiveRClass=true`
+  * `android.builtInKotlin=false` with `android.sync.suppressAgpWarnings=UNSUPPORTED_PROJECT_OPTION_USE` (preserves Java-only / zero-Kotlin APK per [ADR-0002](./docs/adr/0002-java-only-zero-dependencies.md))
   * `org.gradle.jvmargs=-Xmx2g`
   * [app/proguard-rules.pro](./app/proguard-rules.pro) (empty)
 * **Runtime Architecture & Constraints:**

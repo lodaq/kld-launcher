@@ -211,13 +211,32 @@ public final class MainActivity extends Activity {
     }
 
     private void bindDock() {
+        String[] oldKeys = new String[DOCK_MAX];
+        Drawable[] oldDrawables = new Drawable[DOCK_MAX];
+        for (int i = 0; i < DOCK_MAX; i++) {
+            oldKeys[i] = (String) slots[i].getTag();
+            oldDrawables[i] = slots[i].getDrawable();
+        }
         for (int i = 0; i < DOCK_MAX; i++) {
             App a = i < dock.size() ? byKey.get(dock.get(i)) : null;
             String k = a == null ? null : a.key;
-            if (!Objects.equals(k, slots[i].getTag())) {
+            if (!Objects.equals(k, oldKeys[i])) {
+                Drawable d = null;
+                if (a != null) {
+                    for (int j = 0; j < DOCK_MAX; j++) {
+                        if (k.equals(oldKeys[j]) && oldDrawables[j] != null) {
+                            d = oldDrawables[j];
+                            oldDrawables[j] = null;
+                            break;
+                        }
+                    }
+                    if (d == null) d = icon(a.cn);
+                }
                 slots[i].setTag(k);
-                slots[i].setImageDrawable(a == null ? null : icon(a.cn));
+                slots[i].setImageDrawable(d);
                 slots[i].setContentDescription(a == null ? null : a.label);
+            } else if (k != null) {
+                oldDrawables[i] = null;
             }
         }
     }
