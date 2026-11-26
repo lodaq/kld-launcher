@@ -5,7 +5,7 @@ This document tracks the exact technology stack and agent skills used in `kld-la
 ## Tech Stack
 
 * **Language:** Java 17 (`JavaVersion.VERSION_17`), no Kotlin
-* **UI & Platform APIs:** Pure Android Framework (`Activity`, `ActivityManager`, `AppOpsManager`, `UsageStatsManager`, `UsageEvents`, `ListView`, `BaseAdapter`, `LinearLayout`, `TextView`, `ImageView`, `LruCache`, `RoleManager`, `PackageManager`, `LauncherApps`, `ShortcutInfo`, `UserManager`, `SharedPreferences`) with programmatic views (no layout XML) and VectorDrawables (`ic_launcher.xml`, `ic_launcher_fg.xml`, `ic_settings.xml`)
+* **UI & Platform APIs:** Pure Android Framework (`Activity`, `ActivityManager`, `AppOpsManager`, `BiometricPrompt`, `KeyguardManager`, `UsageStatsManager`, `UsageEvents`, `ListView`, `BaseAdapter`, `LinearLayout`, `TextView`, `ImageView`, `LruCache`, `RoleManager`, `PackageManager`, `LauncherApps`, `ShortcutInfo`, `UserManager`, `SharedPreferences`) with programmatic views (no layout XML) and VectorDrawables (`ic_launcher.xml`, `ic_launcher_fg.xml`, `ic_settings.xml`)
 * **Dependencies:** Zero third-party libraries, zero AndroidX, zero Jetpack Compose (enforced by [docs/adr/0002-java-only-zero-dependencies.md](./docs/adr/0002-java-only-zero-dependencies.md))
 * **Build System:** Gradle `9.6.0` (Kotlin DSL), Android Gradle Plugin `9.5.3`
 * **Android SDK Targets:** `compileSdk 35`, `minSdk 24`, `targetSdk 35`
@@ -19,7 +19,7 @@ This document tracks the exact technology stack and agent skills used in `kld-la
   * [app/proguard-rules.pro](./app/proguard-rules.pro) (empty)
 * **Runtime Architecture & Constraints:**
   * Single `Activity` ([MainActivity.java](./app/src/main/java/app/kld/launcher/MainActivity.java), `launchMode="singleTask"`, `stateNotNeeded="true"`)
-  * `allowBackup="false"`, `supportsRtl="true"`, `Theme.Black.NoTitleBar`, `KILL_BACKGROUND_PROCESSES` (used only when `Close previous app` is On), `PACKAGE_USAGE_STATS` (used only when `Show time today` is On or `App limits` are set)
+  * `allowBackup="false"`, `supportsRtl="true"`, `Theme.Black.NoTitleBar`, `KILL_BACKGROUND_PROCESSES` (used only when `Close previous app` is On), `PACKAGE_USAGE_STATS` (used only when `Show time today` is On or `App limits` are set), `USE_BIOMETRIC` (used to verify device owner before opening App limits)
   * No services, broadcast receivers, or animations; at idle there is zero background work (short-lived worker threads run only transiently during icon pre-loading, today's usage query when `Show time today` is On or `App limits` are set, or `Close previous app`) ([DESIGN.md](./DESIGN.md))
 
 ---

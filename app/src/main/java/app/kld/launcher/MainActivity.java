@@ -3,6 +3,7 @@ package app.kld.launcher;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.AppOpsManager;
+import android.app.KeyguardManager;
 import android.app.role.RoleManager;
 import android.app.usage.UsageEvents;
 import android.app.usage.UsageStatsManager;
@@ -21,9 +22,12 @@ import android.graphics.Canvas;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
+import android.hardware.biometrics.BiometricManager;
+import android.hardware.biometrics.BiometricPrompt;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Process;
@@ -59,6 +63,7 @@ public final class MainActivity extends Activity {
     private static final int DOCK_MAX = 5, DOCK_CELLS = DOCK_MAX + 1, MAX_SHORTCUTS = 5;
     private static final int SCREEN_MAIN = 0, SCREEN_SETTINGS = 1, SCREEN_HIDDEN = 2, SCREEN_SORT_DOCK = 3,
             SCREEN_APP_MENU = 4, SCREEN_APP_LIMITS = 5, SCREEN_APP_LIMIT = 6, SCREEN_RENAME = 7;
+    private static final int REQ_HOME = 1, REQ_OWNER = 2;
     private static final int[] LIMIT_MINS = {0, 1, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240};
     private static final String GEAR_KEY = "_gear";
 
@@ -99,6 +104,7 @@ public final class MainActivity extends Activity {
     private boolean icons, showUsage, pendingUsagePerm, pendingLimitsPerm, clones, singleApp, dirty, reload,
             sortFromSettings, limitFromAppMenu, hasSyncedUsage;
     private App pendingLimitApp, limitApp, renameApp;
+    private Runnable pendingOwnerAction;
     private String loadedLoc = "";
     private int screen, gearPos, listIconPx, dockIconPx;
     private volatile int iconGen, usageGen, usageWorkingGen = -1;
@@ -263,7 +269,7 @@ public final class MainActivity extends Activity {
             if (Build.VERSION.SDK_INT >= 29) {
                 RoleManager rm = getSystemService(RoleManager.class);
                 if (rm.isRoleAvailable(RoleManager.ROLE_HOME) && !rm.isRoleHeld(RoleManager.ROLE_HOME)) {
-                    startActivityForResult(rm.createRequestRoleIntent(RoleManager.ROLE_HOME), 1);
+                    startActivityForResult(rm.createRequestRoleIntent(RoleManager.ROLE_HOME), REQ_HOME);
                 }
             } else {
                 ResolveInfo r = pm.resolveActivity(
@@ -273,6 +279,15 @@ public final class MainActivity extends Activity {
                 }
             }
         } catch (Exception ignored) { }
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_OWNER) {
+            Runnable action = pendingOwnerAction;
+            pendingOwnerAction = null;
+            if (resultCode == RESULT_OK && action != null) action.run();
+        }
     }
 
     // ---- screens ----
@@ -394,6 +409,7 @@ public final class MainActivity extends Activity {
         appLimitsAdapter = null;
         limitApp = null;
         renameApp = null;
+        pendingOwnerAction = null;
         setContentView(main);
         if (reload) {
             reload = dirty = false;
@@ -459,7 +475,7 @@ public final class MainActivity extends Activity {
         s.addView(rule());
         s.addView(row("Hidden apps", String.valueOf(hidden.size()), v -> showHidden()));
         s.addView(rule());
-        s.addView(row("App limits", appLimitsSettingsValue(), v -> {
+        s.addView(row("App limits", appLimitsSettingsValue(), v -> verifyOwner(() -> {
             if (!hasUsagePermission()) {
                 pendingLimitsPerm = true;
                 pendingLimitApp = null;
@@ -467,7 +483,7 @@ public final class MainActivity extends Activity {
             } else {
                 showAppLimits();
             }
-        }));
+        })));
         s.addView(rule());
         s.addView(row("Sort dock", "", v -> showSortDock(true)));
         s.addView(rule());
@@ -754,7 +770,7 @@ public final class MainActivity extends Activity {
         }
 
         if (a.user == null) {
-            items.addView(row("Daily limit", appLimitMenuValue(a), v -> {
+            items.addView(row("Daily limit", appLimitMenuValue(a), v -> verifyOwner(() -> {
                 if (!hasUsagePermission()) {
                     pendingLimitsPerm = true;
                     pendingLimitApp = a;
@@ -763,7 +779,7 @@ public final class MainActivity extends Activity {
                 } else {
                     showAppLimit(a, true);
                 }
-            }));
+            })));
             items.addView(rule());
         }
 
@@ -1269,6 +1285,55 @@ public final class MainActivity extends Activity {
     }
 
     // ---- usage & limits ----
+
+    private void verifyOwner(final Runnable onVerified) {
+        final KeyguardManager km = getSystemService(KeyguardManager.class);
+        if (km == null || !km.isDeviceSecure()) {
+            onVerified.run();
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                BiometricPrompt.Builder b = new BiometricPrompt.Builder(this)
+                        .setTitle("App limits")
+                        .setSubtitle("Verify you are the owner");
+                if (Build.VERSION.SDK_INT >= 30) {
+                    b.setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK
+                            | BiometricManager.Authenticators.DEVICE_CREDENTIAL);
+                } else {
+                    b.setDeviceCredentialAllowed(true);
+                }
+                b.build().authenticate(new CancellationSignal(), getMainExecutor(),
+                        new BiometricPrompt.AuthenticationCallback() {
+                            @Override public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
+                                onVerified.run();
+                            }
+                            @Override public void onAuthenticationError(int errorCode, CharSequence errString) {
+                                if (errorCode == BiometricPrompt.BIOMETRIC_ERROR_NO_BIOMETRICS
+                                        || errorCode == BiometricPrompt.BIOMETRIC_ERROR_HW_NOT_PRESENT
+                                        || errorCode == BiometricPrompt.BIOMETRIC_ERROR_HW_UNAVAILABLE) {
+                                    confirmDeviceCredential(km, onVerified);
+                                }
+                            }
+                        });
+                return;
+            } catch (Exception ignored) { }
+        }
+        confirmDeviceCredential(km, onVerified);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void confirmDeviceCredential(KeyguardManager km, Runnable onVerified) {
+        try {
+            Intent intent = km.createConfirmDeviceCredentialIntent("App limits", "Verify you are the owner");
+            if (intent != null) {
+                pendingOwnerAction = onVerified;
+                startActivityForResult(intent, REQ_OWNER);
+                return;
+            }
+        } catch (Exception ignored) { }
+        onVerified.run();
+    }
 
     private int limitMinutes(App a) {
         Integer m = a == null || a.user != null ? null : appLimits.get(a.key);
