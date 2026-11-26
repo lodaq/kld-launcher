@@ -1,6 +1,7 @@
 package app.kld.launcher;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.role.RoleManager;
 import android.content.ComponentName;
 import android.content.Intent;
@@ -47,33 +48,37 @@ public final class MainActivity extends Activity {
     static final class App { String key, label; ComponentName cn; UserHandle user; int n; }
 
     private final HashMap<String, App> byKey = new HashMap<>();
+    private final HashSet<String> pkgs = new HashSet<>();
     private final ArrayList<App> shown = new ArrayList<>();   // the App list (not docked, not hidden)
     private final ArrayList<String> dock = new ArrayList<>(); // docked keys, no gaps
     private final HashSet<String> hidden = new HashSet<>();
     private final ImageView[] cells = new ImageView[DOCK_CELLS];
     private SharedPreferences counts, labels, prefs;
     private PackageManager pm;
+    private ActivityManager am;
     private LauncherApps la;
     private UserManager um;
     private LruCache<String, Drawable> iconCache; // non-null only while Show icons is On and visible
     private LinearLayout main;
     private ListView list;
     private BaseAdapter adapter;
-    private boolean icons, clones, dirty, reload, sortFromSettings;
+    private boolean icons, clones, singleApp, dirty, reload, sortFromSettings;
     private int screen, gearPos;
     private float density;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         pm = getPackageManager();
+        am = getSystemService(ActivityManager.class);
         la = getSystemService(LauncherApps.class);
         um = getSystemService(UserManager.class);
         density = getResources().getDisplayMetrics().density;
         counts = getSharedPreferences("c", 0);
         labels = getSharedPreferences("l", 0);
-        prefs = getSharedPreferences("s", 0); // keys: "icons", "clones", "dock", "gear", "hidden"
+        prefs = getSharedPreferences("s", 0); // keys: "icons", "clones", "single", "dock", "gear", "hidden"
         icons = prefs.getBoolean("icons", false);
         clones = prefs.getBoolean("clones", false);
+        singleApp = prefs.getBoolean("single", false);
         gearPos = Math.max(0, Math.min(DOCK_MAX, prefs.getInt("gear", 0)));
         hidden.addAll(prefs.getStringSet("hidden", Collections.emptySet()));
         main = buildMain();
@@ -237,6 +242,12 @@ public final class MainActivity extends Activity {
             reload = true;
             prefs.edit().putBoolean("clones", clones).apply();
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(clones ? "On" : "Off");
+        }));
+        s.addView(rule());
+        s.addView(row("Close previous app", singleApp ? "On" : "Off", v -> {
+            singleApp = !singleApp;
+            prefs.edit().putBoolean("single", singleApp).apply();
+            ((TextView) ((LinearLayout) v).getChildAt(1)).setText(singleApp ? "On" : "Off");
         }));
         s.addView(rule());
         s.addView(row("Hidden apps", String.valueOf(hidden.size()), v -> showHidden()));
@@ -523,6 +534,7 @@ public final class MainActivity extends Activity {
                 if (TextUtils.isEmpty(lbl)) lbl = si.getLongLabel();
                 if (TextUtils.isEmpty(lbl)) continue;
                 View r = row(lbl.toString(), "", v -> {
+                    closePrevious(a.cn.getPackageName());
                     try { la.startShortcut(si, null, null); } catch (Exception ignored) { }
                     showMain();
                 });
@@ -624,9 +636,11 @@ public final class MainActivity extends Activity {
         if (!loc.equals(labels.getString("_loc", ""))) labels.edit().clear().putString("_loc", loc).apply();
         SharedPreferences.Editor ed = null;
         byKey.clear();
+        pkgs.clear();
         for (ResolveInfo r : pm.queryIntentActivities(q, 0)) {
             ActivityInfo a = r.activityInfo;
             if (a.packageName.equals(getPackageName())) continue;
+            pkgs.add(a.packageName);
             App app = new App();
             app.cn = new ComponentName(a.packageName, a.name);
             app.key = app.cn.flattenToShortString();
@@ -679,9 +693,19 @@ public final class MainActivity extends Activity {
         if (!joined.equals(saved)) saveDock(); // uninstalled/hidden apps drop out
     }
 
+    private void closePrevious(String keepPkg) {
+        if (!singleApp || am == null) return;
+        for (String p : pkgs) {
+            if (!p.equals(keepPkg)) {
+                try { am.killBackgroundProcesses(p); } catch (Exception ignored) { }
+            }
+        }
+    }
+
     private void launch(App a) {
         if (a == null) return;
         try {
+            closePrevious(a.cn.getPackageName());
             if (a.user != null && la != null) {
                 la.startMainActivity(a.cn, a.user, null, null);
             } else {

@@ -33,7 +33,7 @@ No bold, italic, letter spacing or all caps.
 - Dock slot: an icon only, 40dp inside the 56dp bar, no label. The icon's accessibility description is the app name. An empty slot is blank.
 - Settings button: outline gear, 24dp drawing, stroke only, TEXT_SECONDARY. It is one VectorDrawable (res/drawable/ic_settings.xml). It is not an App and does not use a Dock slot. Its position in the Dock can be changed via Sort dock.
 - Settings screen: a title row, then one row per setting, each separated by a DIVIDER line. Label on the left, value on the right in SECONDARY. Toggles are the words On and Off, not switch widgets. Tapping a row changes it in place.
-- Settings rows in this build: "Show icons" (On or Off, default Off), "Show clones" (On or Off, default Off), "Hidden apps" (opens a list of Apps to hide or unhide), "Sort dock" (reorders the Settings button and Docked apps), and "Manage apps" (opens the system app settings).
+- Settings rows in this build: "Show icons" (On or Off, default Off), "Show clones" (On or Off, default Off; discovers Android Work Profiles and Android 14+ Clone Profiles), "Close previous app" (On or Off, default Off; calls ActivityManager.killBackgroundProcesses on other launcher packages when launching an app, effective on Android <= 13), "Hidden apps" (opens a list of Apps to hide or unhide), "Sort dock" (reorders the Settings button and Docked apps), and "Manage apps" (opens the system app settings).
 - App icon: a white letter K on black, drawn as vectors: res/drawable/ic_launcher.xml, ic_launcher_fg.xml and the adaptive res/drawable-anydpi-v26/ic_launcher.xml. These and ic_settings.xml are the only resource files.
 
 ## Behaviour

@@ -5,7 +5,7 @@ Each checkbox is a single, standalone feature task.
 
 ## App Visibility & Profiles
 - [x] **Hide apps**: Allow hiding selected Apps from the App list, with a Settings screen list to view and unhide them.
-- [x] **Show clones**: Support discovering and launching cloned / secondary-profile Apps (e.g. Dual Apps / App Twin / Work profile via `LauncherApps` and `UserManager`) with a Settings toggle and clear distinction from the primary profile App.
+- [x] **Show clones**: Support discovering and launching cloned / secondary-profile Apps (Android Work Profiles via Shelter/Island and Android 14+ Clone profiles via `LauncherApps` and `UserManager`) with a Settings toggle and clear distinction from the primary profile App.
 - [ ] **Rename apps**: Allow giving any App a custom display label in the App list (with reset to system label), persisted locally.
 
 ## Finding & Launching Apps
