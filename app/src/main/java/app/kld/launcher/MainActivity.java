@@ -2,7 +2,10 @@ package app.kld.launcher;
 
 import android.app.Activity;
 import android.app.ActivityManager;
+import android.app.AppOpsManager;
 import android.app.role.RoleManager;
+import android.app.usage.UsageEvents;
+import android.app.usage.UsageStatsManager;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -40,10 +43,12 @@ import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 public final class MainActivity extends Activity {
@@ -53,18 +58,25 @@ public final class MainActivity extends Activity {
     private static final String GEAR_KEY = "_gear";
 
     static final class App { String key, label; ComponentName cn; UserHandle user; int n; }
-    private static final class RowTag { String key; Drawable icon; }
+    private static final class RowTag {
+        String key, timeText;
+        Drawable icon;
+        TextView name, time;
+    }
 
     private final HashMap<String, App> byKey = new HashMap<>();
     private final HashSet<String> pkgs = new HashSet<>();
     private final ArrayList<App> shown = new ArrayList<>();   // the App list (not docked, not hidden)
     private final ArrayList<String> dock = new ArrayList<>(); // docked keys, no gaps
     private final HashSet<String> hidden = new HashSet<>();
+    private final HashMap<String, String> usageLabels = new HashMap<>();
     private final ImageView[] cells = new ImageView[DOCK_CELLS];
     private final LruCache<String, Drawable> dockCache = new LruCache<>(DOCK_MAX + 4);
     private SharedPreferences counts, labels, prefs;
     private PackageManager pm;
     private ActivityManager am;
+    private AppOpsManager aom;
+    private UsageStatsManager usm;
     private LauncherApps la;
     private UserManager um;
     private Handler mainHandler;
@@ -74,16 +86,19 @@ public final class MainActivity extends Activity {
     private LinearLayout main;
     private ListView list;
     private BaseAdapter adapter;
-    private boolean icons, clones, singleApp, dirty, reload, sortFromSettings;
+    private boolean icons, showUsage, pendingUsagePerm, clones, singleApp, dirty, reload, sortFromSettings;
     private String loadedLoc = "";
     private int screen, gearPos, listIconPx, dockIconPx;
-    private volatile int iconGen;
+    private volatile int iconGen, usageGen, usageWorkingGen = -1;
+    private long lastUsageUptime;
     private float density;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         pm = getPackageManager();
         am = getSystemService(ActivityManager.class);
+        aom = getSystemService(AppOpsManager.class);
+        usm = getSystemService(UsageStatsManager.class);
         la = getSystemService(LauncherApps.class);
         um = getSystemService(UserManager.class);
         mainHandler = new Handler(Looper.getMainLooper());
@@ -94,8 +109,9 @@ public final class MainActivity extends Activity {
         iconPlaceholder.setBounds(0, 0, listIconPx, listIconPx);
         counts = getSharedPreferences("c", 0);
         labels = getSharedPreferences("l", 0);
-        prefs = getSharedPreferences("s", 0); // keys: "icons", "clones", "single", "dock", "gear", "hidden"
+        prefs = getSharedPreferences("s", 0); // keys: "icons", "usage", "clones", "single", "dock", "gear", "hidden"
         icons = prefs.getBoolean("icons", false);
+        showUsage = prefs.getBoolean("usage", false);
         clones = prefs.getBoolean("clones", false);
         singleApp = prefs.getBoolean("single", false);
         gearPos = Math.max(0, Math.min(DOCK_MAX, prefs.getInt("gear", 0)));
@@ -126,7 +142,17 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
-        if (screen == SCREEN_MAIN) syncIfNeeded();
+        if (screen == SCREEN_SETTINGS && pendingUsagePerm) {
+            pendingUsagePerm = false;
+            if (hasUsagePermission()) {
+                showUsage = true;
+                lastUsageUptime = 0;
+                prefs.edit().putBoolean("usage", true).apply();
+                showSettings();
+            }
+        } else if (screen == SCREEN_MAIN) {
+            syncIfNeeded();
+        }
     }
 
     @Override public void onWindowFocusChanged(boolean hasFocus) {
@@ -141,13 +167,17 @@ public final class MainActivity extends Activity {
             if (iconCache != null) {
                 iconCache = null;
                 for (int i = 0, c = list.getChildCount(); i < c; i++) {
-                    TextView tv = (TextView) list.getChildAt(i);
-                    RowTag rt = (RowTag) tv.getTag();
-                    if (rt != null) rt.icon = null;
-                    tv.setCompoundDrawablesRelative(null, null, null, null);
+                    RowTag rt = (RowTag) list.getChildAt(i).getTag();
+                    if (rt != null) {
+                        rt.icon = null;
+                        rt.name.setCompoundDrawablesRelative(null, null, null, null);
+                    }
                 }
             }
             if (level >= TRIM_MEMORY_COMPLETE) {
+                ++usageGen;
+                lastUsageUptime = 0;
+                usageLabels.clear();
                 dockCache.evictAll();
                 for (ImageView cell : cells) {
                     if (!GEAR_KEY.equals(cell.getTag())) {
@@ -162,6 +192,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         ++iconGen;
+        ++usageGen;
         if (la != null && pkgCb != null) {
             try { la.unregisterCallback(pkgCb); } catch (Exception ignored) { }
         }
@@ -220,25 +251,41 @@ public final class MainActivity extends Activity {
             public Object getItem(int i) { return shown.get(i); }
             public long getItemId(int i) { return i; }
             public View getView(int i, View v, ViewGroup p) {
-                TextView t = (TextView) v;
+                LinearLayout r = (LinearLayout) v;
                 RowTag rt;
-                if (t == null) {
-                    t = new TextView(MainActivity.this);
-                    t.setTextSize(20);
-                    t.setTextColor(TEXT);
-                    t.setSingleLine(true);
-                    t.setEllipsize(TextUtils.TruncateAt.END);
-                    t.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-                    t.setPadding(pad, pad, pad, pad);
-                    t.setCompoundDrawablePadding(pad);
+                if (r == null) {
+                    r = new LinearLayout(MainActivity.this);
+                    r.setGravity(Gravity.CENTER_VERTICAL);
+                    r.setPadding(pad, pad, pad, pad);
+
+                    TextView name = new TextView(MainActivity.this);
+                    name.setTextSize(20);
+                    name.setTextColor(TEXT);
+                    name.setSingleLine(true);
+                    name.setEllipsize(TextUtils.TruncateAt.END);
+                    name.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                    name.setCompoundDrawablePadding(pad);
+                    r.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+
+                    TextView time = new TextView(MainActivity.this);
+                    time.setTextSize(14);
+                    time.setTextColor(SEC);
+                    time.setSingleLine(true);
+                    time.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+                    time.setPaddingRelative(pad, 0, 0, 0);
+                    time.setVisibility(View.GONE);
+                    r.addView(time);
+
                     rt = new RowTag();
-                    t.setTag(rt);
+                    rt.name = name;
+                    rt.time = time;
+                    r.setTag(rt);
                 } else {
-                    rt = (RowTag) t.getTag();
+                    rt = (RowTag) r.getTag();
                 }
                 App a = shown.get(i);
                 rt.key = a.key;
-                t.setText(a.label);
+                rt.name.setText(a.label);
                 Drawable target = null;
                 if (iconCache != null) {
                     Drawable d = iconCache.get(a.key);
@@ -246,9 +293,16 @@ public final class MainActivity extends Activity {
                 }
                 if (rt.icon != target) {
                     rt.icon = target;
-                    t.setCompoundDrawablesRelative(target, null, null, null);
+                    rt.name.setCompoundDrawablesRelative(target, null, null, null);
                 }
-                return t;
+                String tt = showUsage && a.user == null ? usageLabels.get(a.cn.getPackageName()) : null;
+                int vis = tt != null ? View.VISIBLE : View.GONE;
+                if (rt.time.getVisibility() != vis) rt.time.setVisibility(vis);
+                if (tt != null && !tt.equals(rt.timeText)) {
+                    rt.timeText = tt;
+                    rt.time.setText(tt);
+                }
+                return r;
             }
         };
         list.setAdapter(adapter);
@@ -310,6 +364,7 @@ public final class MainActivity extends Activity {
                 adapter.notifyDataSetChanged();
             }
         }
+        syncUsage();
     }
 
     private void showSettings() {
@@ -321,6 +376,27 @@ public final class MainActivity extends Activity {
             icons = !icons;
             prefs.edit().putBoolean("icons", icons).apply();
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(icons ? "On" : "Off");
+        }));
+        s.addView(rule());
+        s.addView(row("Show time today", (showUsage && hasUsagePermission()) ? "On" : "Off", v -> {
+            TextView val = (TextView) ((LinearLayout) v).getChildAt(1);
+            if (showUsage && hasUsagePermission()) {
+                showUsage = false;
+                pendingUsagePerm = false;
+                lastUsageUptime = 0;
+                ++usageGen;
+                prefs.edit().putBoolean("usage", false).apply();
+                val.setText("Off");
+            } else if (hasUsagePermission()) {
+                showUsage = true;
+                pendingUsagePerm = false;
+                lastUsageUptime = 0;
+                prefs.edit().putBoolean("usage", true).apply();
+                val.setText("On");
+            } else {
+                pendingUsagePerm = true;
+                openUsageAccessSettings();
+            }
         }));
         s.addView(rule());
         s.addView(row("Show clones", clones ? "On" : "Off", v -> {
@@ -787,6 +863,7 @@ public final class MainActivity extends Activity {
         } else {
             preloadIcons();
         }
+        syncUsage();
     }
 
     private void invalidatePkg(String pkg) {
@@ -957,16 +1034,156 @@ public final class MainActivity extends Activity {
     private void refreshVisibleListIcons() {
         if (iconCache == null) return;
         for (int i = 0, c = list.getChildCount(); i < c; i++) {
-            TextView tv = (TextView) list.getChildAt(i);
-            RowTag rt = (RowTag) tv.getTag();
+            RowTag rt = (RowTag) list.getChildAt(i).getTag();
             if (rt != null && rt.icon == iconPlaceholder) {
                 Drawable d = iconCache.get(rt.key);
                 if (d != null) {
                     rt.icon = d;
-                    tv.setCompoundDrawablesRelative(d, null, null, null);
+                    rt.name.setCompoundDrawablesRelative(d, null, null, null);
                 }
             }
         }
+    }
+
+    // ---- usage ----
+
+    private boolean hasUsagePermission() {
+        if (aom == null) return false;
+        try {
+            int mode = Build.VERSION.SDK_INT >= 29
+                    ? aom.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), getPackageName())
+                    : aom.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), getPackageName());
+            return mode == AppOpsManager.MODE_ALLOWED || (mode == AppOpsManager.MODE_DEFAULT
+                    && checkSelfPermission(android.Manifest.permission.PACKAGE_USAGE_STATS) == PackageManager.PERMISSION_GRANTED);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void openUsageAccessSettings() {
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                startActivity(new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS,
+                        Uri.fromParts("package", getPackageName(), null)));
+                return;
+            } catch (Exception ignored) { }
+        }
+        try {
+            startActivity(new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS));
+        } catch (Exception ignored) { }
+    }
+
+    private void syncUsage() {
+        if (!showUsage || !hasUsagePermission()) {
+            ++usageGen;
+            lastUsageUptime = 0;
+            if (!usageLabels.isEmpty()) {
+                usageLabels.clear();
+                adapter.notifyDataSetChanged();
+            }
+            return;
+        }
+        if (usm == null || usageWorkingGen == usageGen) return;
+        if (lastUsageUptime != 0 && SystemClock.uptimeMillis() - lastUsageUptime < 1000L) return;
+        final int gen = ++usageGen;
+        usageWorkingGen = gen;
+        Thread w = new Thread(() -> {
+            HashMap<String, String> next = null;
+            try {
+                next = queryTodayUsage();
+            } finally {
+                final HashMap<String, String> result = next;
+                mainHandler.post(() -> {
+                    if (usageWorkingGen == gen) usageWorkingGen = -1;
+                    if (gen != usageGen || !showUsage) return;
+                    lastUsageUptime = SystemClock.uptimeMillis();
+                    if (result != null && !result.equals(usageLabels)) {
+                        usageLabels.clear();
+                        usageLabels.putAll(result);
+                        adapter.notifyDataSetChanged();
+                    }
+                });
+            }
+        }, "kld-usage");
+        w.setPriority(Thread.NORM_PRIORITY - 1);
+        w.start();
+    }
+
+    private HashMap<String, String> queryTodayUsage() {
+        HashMap<String, String> out = new HashMap<>();
+        if (usm == null) return out;
+        long now = System.currentTimeMillis();
+        Calendar cal = Calendar.getInstance();
+        cal.set(Calendar.HOUR_OF_DAY, 0);
+        cal.set(Calendar.MINUTE, 0);
+        cal.set(Calendar.SECOND, 0);
+        cal.set(Calendar.MILLISECOND, 0);
+        long dayStart = cal.getTimeInMillis();
+        UsageEvents events;
+        try {
+            events = usm.queryEvents(Math.max(0L, dayStart - 12L * 3600_000L), now);
+        } catch (Exception e) {
+            return out;
+        }
+        if (events == null) return out;
+
+        // Per-package state: [0] = total ms today, [1] = active start ts, [2] = active activity count.
+        HashMap<String, long[]> state = new HashMap<>();
+        UsageEvents.Event ev = new UsageEvents.Event();
+        String selfPkg = getPackageName();
+        while (events.hasNextEvent()) {
+            if (!events.getNextEvent(ev)) break;
+            int type = ev.getEventType();
+            long ts = ev.getTimeStamp();
+            if (type == UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                String pkg = ev.getPackageName();
+                if (pkg == null || pkg.equals(selfPkg)) continue;
+                long[] s = state.get(pkg);
+                if (s == null) {
+                    s = new long[3];
+                    state.put(pkg, s);
+                }
+                if (s[2]++ == 0) s[1] = ts;
+            } else if (type == UsageEvents.Event.MOVE_TO_BACKGROUND) {
+                String pkg = ev.getPackageName();
+                if (pkg == null) continue;
+                long[] s = state.get(pkg);
+                if (s != null && s[2] > 0 && --s[2] == 0) {
+                    long start = Math.max(s[1], dayStart);
+                    long end = Math.min(ts, now);
+                    if (end > start) s[0] += end - start;
+                }
+            } else if (Build.VERSION.SDK_INT >= 29 && (type == UsageEvents.Event.SCREEN_NON_INTERACTIVE
+                    || type == UsageEvents.Event.KEYGUARD_SHOWN
+                    || type == UsageEvents.Event.DEVICE_SHUTDOWN)) {
+                for (long[] s : state.values()) {
+                    if (s[2] > 0) {
+                        long start = Math.max(s[1], dayStart);
+                        long end = Math.min(ts, now);
+                        if (end > start) s[0] += end - start;
+                        s[2] = 0;
+                    }
+                }
+            } else if (Build.VERSION.SDK_INT >= 29 && type == UsageEvents.Event.DEVICE_STARTUP) {
+                for (long[] s : state.values()) s[2] = 0;
+            }
+        }
+        for (Map.Entry<String, long[]> e : state.entrySet()) {
+            String formatted = formatDuration(e.getValue()[0]);
+            if (formatted != null) out.put(e.getKey(), formatted);
+        }
+        return out;
+    }
+
+    private static String formatDuration(long ms) {
+        if (ms < 1000L) return null;
+        long mins = ms / 60_000L;
+        if (mins == 0L) return "<1m";
+        long hours = mins / 60L;
+        long rem = mins % 60L;
+        if (hours == 0L) return mins + "m";
+        if (rem == 0L) return hours + "h";
+        return hours + "h " + rem + "m";
     }
 
     // ---- small view helpers ----

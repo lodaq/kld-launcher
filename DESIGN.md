@@ -6,7 +6,7 @@ Principle: the launcher is a list of words and a row of icons. Anything that doe
 - Zero dependencies. Java only. No AndroidX, no Kotlin.
 - No animation of any kind: no transitions, no ripple, no fades, no layout animation.
 - Icons exist only in the Dock, and in the App list when Show icons is On (default Off).
-- No services, receivers, or idle background work. At idle the app does nothing; transient short-lived worker threads run only to rasterize icons when loading/toggling `Show icons` or to close previous background processes when `Close previous app` is On.
+- No services, receivers, or idle background work. At idle the app does nothing; transient short-lived worker threads run only to rasterize icons when loading/toggling `Show icons`, to query today's app usage when `Show time today` is On, or to close previous background processes when `Close previous app` is On.
 
 ## Colour (ARGB constants at the top of MainActivity)
 - BACKGROUND 0xFF000000 (true black)
@@ -28,12 +28,12 @@ No bold, italic, letter spacing or all caps.
 - Rows run edge to edge. System bar insets become padding on the screen root.
 
 ## Components
-- App row: one TextView, left aligned. With Show icons On, a 32dp icon sits on the left with 16dp spacing before the name.
+- App row: left-aligned app name (`APP_NAME`). With Show icons On, a 32dp icon sits on the start side with 16dp spacing before the name. With Show time today On (and Usage Access granted), today's foreground time sits on the end side in `SECONDARY` (hidden when `<1s`).
 - Dock: 56dp tall, above a single 1dp DIVIDER line. Six equal-width cells: the Settings button and five Dock slots. Nothing scrolls.
 - Dock slot: an icon only, 40dp inside the 56dp bar, no label. The icon's accessibility description is the app name. An empty slot is blank.
 - Settings button: outline gear, 24dp drawing, stroke only, TEXT_SECONDARY. It is one VectorDrawable (res/drawable/ic_settings.xml). It is not an App and does not use a Dock slot. Its position in the Dock can be changed via Sort dock.
 - Settings screen: a title row, then one row per setting, each separated by a DIVIDER line. Label on the left, value on the right in SECONDARY. Toggles are the words On and Off, not switch widgets. Tapping a row changes it in place.
-- Settings rows in this build: "Show icons" (On or Off, default Off), "Show clones" (On or Off, default Off; discovers Android Work Profiles and Android 14+ Clone Profiles), "Close previous app" (On or Off, default Off; calls ActivityManager.killBackgroundProcesses on other launcher packages when launching an app, effective on Android <= 13), "Hidden apps" (opens a list of Apps to hide or unhide), "Sort dock" (reorders the Settings button and Docked apps), and "Manage apps" (opens the system app settings).
+- Settings rows in this build: "Show icons" (On or Off, default Off), "Show time today" (On or Off, default Off; requests Android Usage Access when toggled On without permission and shows today's foreground duration per App), "Show clones" (On or Off, default Off; discovers Android Work Profiles and Android 14+ Clone Profiles), "Close previous app" (On or Off, default Off; calls ActivityManager.killBackgroundProcesses on other launcher packages when launching an app, effective on Android <= 13), "Hidden apps" (opens a list of Apps to hide or unhide), "Sort dock" (reorders the Settings button and Docked apps), and "Manage apps" (opens the system app settings).
 - App icon: a white letter K on black, drawn as vectors: res/drawable/ic_launcher.xml, ic_launcher_fg.xml and the adaptive res/drawable-anydpi-v26/ic_launcher.xml. These and ic_settings.xml are the only resource files.
 
 ## Behaviour
