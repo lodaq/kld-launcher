@@ -19,6 +19,7 @@ import android.content.pm.ResolveInfo;
 import android.content.pm.ShortcutInfo;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
@@ -38,12 +39,15 @@ import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.LruCache;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.AbsListView;
 import android.widget.BaseAdapter;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -369,7 +373,7 @@ public final class MainActivity extends Activity {
         list.setAdapter(adapter);
         list.setOnItemClickListener((p, v, i, id) -> launch(shown.get(i)));
         list.setOnItemLongClickListener((p, v, i, id) -> { showAppMenu(shown.get(i)); return true; });
-        m.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        m.addView(wrapWithScrollbar(list), new LinearLayout.LayoutParams(-1, 0, 1));
 
         m.addView(rule());
 
@@ -439,13 +443,15 @@ public final class MainActivity extends Activity {
         LinearLayout s = column();
         s.addView(row("Settings", "", null));
         s.addView(rule());
-        s.addView(row("Show icons", icons ? "On" : "Off", v -> {
+        LinearLayout items = new LinearLayout(this);
+        items.setOrientation(LinearLayout.VERTICAL);
+        items.addView(row("Show icons", icons ? "On" : "Off", v -> {
             icons = !icons;
             prefs.edit().putBoolean("icons", icons).apply();
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(icons ? "On" : "Off");
         }));
-        s.addView(rule());
-        s.addView(row("Show time today", (showUsage && hasUsagePermission()) ? "On" : "Off", v -> {
+        items.addView(rule());
+        items.addView(row("Show time today", (showUsage && hasUsagePermission()) ? "On" : "Off", v -> {
             if (!hasUsagePermission()) {
                 pendingUsagePerm = true;
                 openUsageAccessSettings();
@@ -459,23 +465,23 @@ public final class MainActivity extends Activity {
             prefs.edit().putBoolean("usage", showUsage).apply();
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(showUsage ? "On" : "Off");
         }));
-        s.addView(rule());
-        s.addView(row("Show clones", clones ? "On" : "Off", v -> {
+        items.addView(rule());
+        items.addView(row("Show clones", clones ? "On" : "Off", v -> {
             clones = !clones;
             reload = true;
             prefs.edit().putBoolean("clones", clones).apply();
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(clones ? "On" : "Off");
         }));
-        s.addView(rule());
-        s.addView(row("Close previous app", singleApp ? "On" : "Off", v -> {
+        items.addView(rule());
+        items.addView(row("Close previous app", singleApp ? "On" : "Off", v -> {
             singleApp = !singleApp;
             prefs.edit().putBoolean("single", singleApp).apply();
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(singleApp ? "On" : "Off");
         }));
-        s.addView(rule());
-        s.addView(row("Hidden apps", String.valueOf(hidden.size()), v -> showHidden()));
-        s.addView(rule());
-        s.addView(row("App limits", appLimitsSettingsValue(), v -> verifyOwner(() -> {
+        items.addView(rule());
+        items.addView(row("Hidden apps", String.valueOf(hidden.size()), v -> showHidden()));
+        items.addView(rule());
+        items.addView(row("App limits", appLimitsSettingsValue(), v -> verifyOwner(() -> {
             if (!hasUsagePermission()) {
                 pendingLimitsPerm = true;
                 pendingLimitApp = null;
@@ -484,15 +490,46 @@ public final class MainActivity extends Activity {
                 showAppLimits();
             }
         })));
-        s.addView(rule());
-        s.addView(row("Sort dock", "", v -> showSortDock(true)));
-        s.addView(rule());
-        s.addView(row("Manage apps", "", v -> {
+        items.addView(rule());
+        items.addView(row("Sort dock", "", v -> showSortDock(true)));
+        items.addView(rule());
+        items.addView(row("Manage apps", "", v -> {
             try { startActivity(new Intent(Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS)); }
             catch (Exception ignored) { }
         }));
-        s.addView(rule());
+        items.addView(rule());
+        items.addView(row("Phone performance boost", "", v ->
+                boostPerformance((TextView) ((LinearLayout) v).getChildAt(1))));
+        items.addView(rule());
+        ScrollView sv = new ScrollView(this);
+        sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.addView(items);
+        s.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(s);
+    }
+
+    private void boostPerformance(final TextView status) {
+        status.setText("Boosting");
+        final ArrayList<String> targets = new ArrayList<>(pkgs);
+        final String selfPkg = getPackageName();
+        Thread w = new Thread(() -> {
+            if (am != null) {
+                for (String p : targets) {
+                    if (!p.equals(selfPkg)) {
+                        try { am.killBackgroundProcesses(p); } catch (Exception ignored) { }
+                    }
+                }
+            }
+            System.gc();
+            mainHandler.post(() -> {
+                if (screen == SCREEN_SETTINGS && status.isAttachedToWindow()) {
+                    status.setText("Done");
+                }
+            });
+        }, "kld-boost");
+        w.setPriority(Thread.NORM_PRIORITY - 1);
+        w.start();
     }
 
     private void showHidden() {
@@ -534,7 +571,7 @@ public final class MainActivity extends Activity {
             dirty = true;
             ((TextView) ((LinearLayout) v).getChildAt(1)).setText(nowHidden ? "Hidden" : "");
         });
-        s.addView(hl, new LinearLayout.LayoutParams(-1, 0, 1));
+        s.addView(wrapWithScrollbar(hl), new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(s);
     }
 
@@ -672,7 +709,7 @@ public final class MainActivity extends Activity {
         };
         lv.setAdapter(appLimitsAdapter);
         lv.setOnItemClickListener((p, v, i, id) -> showAppLimit(all.get(i), false));
-        s.addView(lv, new LinearLayout.LayoutParams(-1, 0, 1));
+        s.addView(wrapWithScrollbar(lv), new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(s);
         syncUsage();
     }
@@ -960,12 +997,21 @@ public final class MainActivity extends Activity {
         prefs.edit().putString("dock", TextUtils.join(",", dock)).apply();
     }
 
+    private void sortShown() {
+        Collections.sort(shown, (x, y) -> {
+            boolean bx = blockedKeys.contains(x.key), by = blockedKeys.contains(y.key);
+            if (bx != by) return bx ? 1 : -1;
+            return x.n != y.n ? y.n - x.n : x.label.compareToIgnoreCase(y.label);
+        });
+    }
+
     private void bind() {
         shown.clear();
         for (App app : byKey.values()) {
             if (!dock.contains(app.key) && !hidden.contains(app.key)) shown.add(app);
         }
-        Collections.sort(shown, (x, y) -> x.n != y.n ? y.n - x.n : x.label.compareToIgnoreCase(y.label));
+        refreshLimitState();
+        sortShown();
         ++iconGen;
         if (icons) {
             int cap = Math.max(128, byKey.size() + 32);
@@ -974,7 +1020,6 @@ public final class MainActivity extends Activity {
         } else {
             iconCache = null;
         }
-        refreshLimitState();
         adapter.notifyDataSetChanged();
         bindDock();
         preloadIcons();
@@ -1428,6 +1473,7 @@ public final class MainActivity extends Activity {
     }
 
     private void notifyUsageViews() {
+        sortShown();
         adapter.notifyDataSetChanged();
         bindDock();
         if (appLimitsAdapter != null) appLimitsAdapter.notifyDataSetChanged();
@@ -1609,7 +1655,135 @@ public final class MainActivity extends Activity {
         lv.setDivider(null);
         lv.setSelector(android.R.color.transparent);
         lv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        lv.setVerticalScrollBarEnabled(false);
         return lv;
+    }
+
+    private FrameLayout wrapWithScrollbar(final ListView lv) {
+        FrameLayout box = new FrameLayout(this);
+        box.addView(lv, new FrameLayout.LayoutParams(-1, -1));
+        final ScrollbarView bar = new ScrollbarView(lv);
+        box.addView(bar, new FrameLayout.LayoutParams(dp(28), -1, Gravity.END));
+        lv.setOnScrollListener(new AbsListView.OnScrollListener() {
+            public void onScrollStateChanged(AbsListView view, int scrollState) { }
+            public void onScroll(AbsListView view, int firstVisibleItem, int visibleItemCount, int totalItemCount) {
+                bar.syncFromList();
+            }
+        });
+        lv.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> bar.syncFromList());
+        return box;
+    }
+
+    private final class ScrollbarView extends View {
+        private final ListView lv;
+        private final Paint paint = new Paint();
+        private final int barW = dp(4), barInset = dp(4), minThumbH = dp(32), padV = dp(8);
+        private int rowHeight = dp(56), maxScroll;
+        private float frac, visibleRatio, grabOffset, lastThumbTop = -1f;
+        private boolean scrollable, dragging;
+
+        ScrollbarView(ListView lv) {
+            super(MainActivity.this);
+            this.lv = lv;
+            paint.setColor(SEC);
+        }
+
+        void syncFromList() {
+            if (dragging) return;
+            int count = lv.getCount();
+            int viewH = lv.getHeight() - lv.getPaddingTop() - lv.getPaddingBottom();
+            if (count <= 0 || viewH <= 0) {
+                if (scrollable) {
+                    scrollable = false;
+                    invalidate();
+                }
+                return;
+            }
+            View first = lv.getChildAt(0);
+            if (first != null && first.getHeight() > 0) rowHeight = first.getHeight();
+            int totalH = count * rowHeight;
+            maxScroll = totalH - viewH;
+            if (maxScroll <= 0) {
+                if (scrollable) {
+                    scrollable = false;
+                    invalidate();
+                }
+                return;
+            }
+            scrollable = true;
+            visibleRatio = Math.min(1f, (float) viewH / totalH);
+            int firstPos = lv.getFirstVisiblePosition();
+            int firstTop = first != null ? first.getTop() - lv.getPaddingTop() : 0;
+            float scrollY = firstPos * (float) rowHeight - firstTop;
+            float nextFrac = Math.max(0f, Math.min(1f, scrollY / maxScroll));
+            float trackH = Math.max(0f, getHeight() - 2f * padV);
+            float thumbH = Math.max(minThumbH, Math.min(trackH, trackH * visibleRatio));
+            float nextTop = padV + nextFrac * Math.max(0f, trackH - thumbH);
+            if (Math.abs(nextTop - lastThumbTop) >= 1f || nextFrac != frac) {
+                frac = nextFrac;
+                invalidate();
+            }
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            if (!scrollable) return;
+            int h = getHeight();
+            float trackH = h - 2f * padV;
+            if (trackH <= 0f) return;
+            float thumbH = Math.max(minThumbH, Math.min(trackH, trackH * visibleRatio));
+            float thumbTop = padV + frac * Math.max(0f, trackH - thumbH);
+            lastThumbTop = thumbTop;
+            paint.setColor(dragging ? TEXT : SEC);
+            boolean rtl = getLayoutDirection() == LAYOUT_DIRECTION_RTL;
+            float left = rtl ? barInset : getWidth() - barInset - barW;
+            canvas.drawRect(left, thumbTop, left + barW, thumbTop + thumbH, paint);
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent ev) {
+            if (!scrollable || maxScroll <= 0) return false;
+            int h = getHeight();
+            float trackH = h - 2f * padV;
+            if (trackH <= 0f) return false;
+            float thumbH = Math.max(minThumbH, Math.min(trackH, trackH * visibleRatio));
+            float travel = Math.max(1f, trackH - thumbH);
+            float y = ev.getY();
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    dragging = true;
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                    float curTop = padV + frac * travel;
+                    if (y >= curTop - padV && y <= curTop + thumbH + padV) {
+                        grabOffset = Math.max(0f, Math.min(thumbH, y - curTop));
+                    } else {
+                        grabOffset = thumbH * 0.5f;
+                    }
+                    scrollToTouch(y, thumbH, travel);
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (dragging) scrollToTouch(y, thumbH, travel);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    dragging = false;
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                    invalidate();
+                    return true;
+            }
+            return super.onTouchEvent(ev);
+        }
+
+        private void scrollToTouch(float y, float thumbH, float travel) {
+            float nextTop = Math.max(0f, Math.min(travel, y - padV - grabOffset));
+            frac = nextTop / travel;
+            int count = lv.getCount();
+            if (count > 0 && rowHeight > 0) {
+                int targetY = Math.round(frac * maxScroll);
+                int idx = Math.max(0, Math.min(count - 1, targetY / rowHeight));
+                int offset = -(targetY % rowHeight);
+                lv.setSelectionFromTop(idx, offset);
+            }
+            invalidate();
+        }
     }
 
     private int dp(int v) { return (int) (v * density + 0.5f); }
