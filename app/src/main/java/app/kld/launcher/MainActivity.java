@@ -107,7 +107,7 @@ public final class MainActivity extends Activity {
     private BaseAdapter adapter, appLimitsAdapter;
     private boolean icons, showUsage, pendingUsagePerm, pendingLimitsPerm, clones, singleApp, sortAlpha, dirty, reload,
             sortFromSettings, limitFromAppMenu, hasSyncedUsage;
-    private App pendingLimitApp, limitApp, renameApp;
+    private App pendingLimitApp, limitApp, renameApp, menuApp;
     private Runnable pendingOwnerAction;
     private String loadedLoc = "";
     private int screen, gearPos, listIconPx, dockIconPx;
@@ -194,6 +194,8 @@ public final class MainActivity extends Activity {
             }
         } else if (screen == SCREEN_MAIN) {
             syncIfNeeded();
+        } else if (screen == SCREEN_APP_MENU && reload && !isAppPresent(menuApp)) {
+            showMain();
         } else if (screen == SCREEN_APP_LIMITS) {
             syncUsage();
         }
@@ -420,6 +422,7 @@ public final class MainActivity extends Activity {
         appLimitsAdapter = null;
         limitApp = null;
         renameApp = null;
+        menuApp = null;
         pendingOwnerAction = null;
         setContentView(main);
         if (reload) {
@@ -739,6 +742,7 @@ public final class MainActivity extends Activity {
         appLimitsAdapter = null;
         limitApp = null;
         renameApp = null;
+        menuApp = a;
         LinearLayout s = column();
         addRow(s, a.label, "", null);
 
@@ -1178,10 +1182,29 @@ public final class MainActivity extends Activity {
         if (ed != null) ed.apply();
         boolean wasReload = reload;
         reload = true;
-        if (!wasReload && screen == SCREEN_MAIN && hasWindowFocus()) {
+        if (screen == SCREEN_APP_MENU && menuApp != null && pkg.equals(menuApp.cn.getPackageName())
+                && !isAppPresent(menuApp)) {
+            mainHandler.post(() -> {
+                if (!isDestroyed() && screen == SCREEN_APP_MENU && !isAppPresent(menuApp)) showMain();
+            });
+        } else if (!wasReload && screen == SCREEN_MAIN && hasWindowFocus()) {
             mainHandler.post(() -> {
                 if (!isDestroyed() && screen == SCREEN_MAIN && hasWindowFocus() && reload) syncIfNeeded();
             });
+        }
+    }
+
+    private boolean isAppPresent(App a) {
+        if (a == null) return false;
+        if (a.user != null && la != null) {
+            try { return la.isPackageEnabled(a.cn.getPackageName(), a.user); }
+            catch (Exception e) { return false; }
+        }
+        try {
+            return pm.resolveActivity(
+                    new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(a.cn), 0) != null;
+        } catch (Exception e) {
+            return false;
         }
     }
 

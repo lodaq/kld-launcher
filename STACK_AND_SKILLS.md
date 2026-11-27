@@ -19,7 +19,7 @@ This document tracks the exact technology stack and agent skills used in `kld-la
   * [app/proguard-rules.pro](./app/proguard-rules.pro) (empty)
 * **Runtime Architecture & Constraints:**
   * Single `Activity` ([MainActivity.java](./app/src/main/java/app/kld/launcher/MainActivity.java), `launchMode="singleTask"`, `stateNotNeeded="true"`)
-  * `allowBackup="false"`, `supportsRtl="true"`, `Theme.Black.NoTitleBar`, `KILL_BACKGROUND_PROCESSES` (used only when `Close previous app` is On), `PACKAGE_USAGE_STATS` (used only when `Show time today` is On or `App limits` are set), `USE_BIOMETRIC` (used to verify device owner before opening App limits)
+  * `allowBackup="false"`, `supportsRtl="true"`, `Theme.Black.NoTitleBar`, `KILL_BACKGROUND_PROCESSES` (used only when `Close previous app` is On), `PACKAGE_USAGE_STATS` (used only when `Show time today` is On or `App limits` are set), `REQUEST_DELETE_PACKAGES` (required on Android 9+ to launch the system uninstall prompt from App options), `USE_BIOMETRIC` (used to verify device owner before opening App limits)
   * No services, broadcast receivers, or animations; at idle there is zero background work (short-lived worker threads run only transiently during icon pre-loading, today's usage query when `Show time today` is On or `App limits` are set, or `Close previous app`) ([DESIGN.md](./DESIGN.md))
 
 ---
