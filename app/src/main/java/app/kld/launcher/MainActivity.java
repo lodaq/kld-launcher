@@ -200,12 +200,13 @@ public final class MainActivity extends Activity {
 
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus && screen == SCREEN_MAIN && (reload || dirty)) syncIfNeeded();
+        if (hasFocus && screen == SCREEN_MAIN && (reload || dirty || (icons && iconCache == null))) syncIfNeeded();
     }
 
     @Override public void onTrimMemory(int level) {
         super.onTrimMemory(level);
-        if (level >= TRIM_MEMORY_MODERATE || level == TRIM_MEMORY_RUNNING_CRITICAL) {
+        if ((level >= TRIM_MEMORY_MODERATE || level == TRIM_MEMORY_RUNNING_CRITICAL)
+                && (!hasWindowFocus() || screen != SCREEN_MAIN)) {
             ++iconGen;
             if (iconCache != null) {
                 iconCache = null;
@@ -1167,7 +1168,13 @@ public final class MainActivity extends Activity {
             }
         }
         if (ed != null) ed.apply();
+        boolean wasReload = reload;
         reload = true;
+        if (!wasReload && screen == SCREEN_MAIN && hasWindowFocus()) {
+            mainHandler.post(() -> {
+                if (!isDestroyed() && screen == SCREEN_MAIN && hasWindowFocus() && reload) syncIfNeeded();
+            });
+        }
     }
 
     private void closePrevious(String keepPkg) {
@@ -1338,7 +1345,7 @@ public final class MainActivity extends Activity {
         if (iconCache == null) return;
         for (int i = 0, c = list.getChildCount(); i < c; i++) {
             RowTag rt = (RowTag) list.getChildAt(i).getTag();
-            if (rt != null && rt.icon == iconPlaceholder) {
+            if (rt != null && (rt.icon == iconPlaceholder || rt.icon == null)) {
                 Drawable d = iconCache.get(rt.key);
                 if (d != null) {
                     rt.icon = d;
