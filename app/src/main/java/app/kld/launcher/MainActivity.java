@@ -105,7 +105,7 @@ public final class MainActivity extends Activity {
     private LinearLayout main;
     private ListView list;
     private BaseAdapter adapter, appLimitsAdapter;
-    private boolean icons, showUsage, pendingUsagePerm, pendingLimitsPerm, clones, singleApp, dirty, reload,
+    private boolean icons, showUsage, pendingUsagePerm, pendingLimitsPerm, clones, singleApp, sortAlpha, dirty, reload,
             sortFromSettings, limitFromAppMenu, hasSyncedUsage;
     private App pendingLimitApp, limitApp, renameApp;
     private Runnable pendingOwnerAction;
@@ -132,12 +132,13 @@ public final class MainActivity extends Activity {
         counts = getSharedPreferences("c", 0);
         labels = getSharedPreferences("l", 0);
         customLabels = getSharedPreferences("names", 0);
-        prefs = getSharedPreferences("s", 0); // keys: "icons", "usage", "clones", "single", "dock", "gear", "hidden"
+        prefs = getSharedPreferences("s", 0); // keys: "icons", "usage", "clones", "single", "sort_az", "dock", "gear", "hidden"
         limits = getSharedPreferences("lim", 0); // app key -> daily limit in minutes
         icons = prefs.getBoolean("icons", false);
         showUsage = prefs.getBoolean("usage", false);
         clones = prefs.getBoolean("clones", false);
         singleApp = prefs.getBoolean("single", false);
+        sortAlpha = prefs.getBoolean("sort_az", false);
         gearPos = Math.max(0, Math.min(DOCK_MAX, prefs.getInt("gear", 0)));
         hidden.addAll(prefs.getStringSet("hidden", Collections.emptySet()));
         for (Map.Entry<String, ?> e : limits.getAll().entrySet()) {
@@ -482,6 +483,12 @@ public final class MainActivity extends Activity {
         });
         addRow(items, "Hidden apps", String.valueOf(hidden.size()), v -> showHidden());
         addRow(items, "App limits", appLimitsSettingsValue(), v -> openLimits(null));
+        addRow(items, "Sort order", sortAlpha ? "A to Z" : "Most used", v -> {
+            sortAlpha = !sortAlpha;
+            dirty = true;
+            prefs.edit().putBoolean("sort_az", sortAlpha).apply();
+            setRowValue(v, sortAlpha ? "A to Z" : "Most used");
+        });
         addRow(items, "Sort dock", "", v -> showSortDock(true));
         addRow(items, "Manage apps", "", v -> {
             try { startActivity(new Intent(Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS)); }
@@ -955,7 +962,8 @@ public final class MainActivity extends Activity {
         Collections.sort(shown, (x, y) -> {
             boolean bx = blockedKeys.contains(x.key), by = blockedKeys.contains(y.key);
             if (bx != by) return bx ? 1 : -1;
-            return x.n != y.n ? y.n - x.n : x.label.compareToIgnoreCase(y.label);
+            if (!sortAlpha && x.n != y.n) return y.n - x.n;
+            return x.label.compareToIgnoreCase(y.label);
         });
     }
 
@@ -1211,7 +1219,7 @@ public final class MainActivity extends Activity {
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED));
             }
             counts.edit().putInt(a.key, ++a.n).apply();
-            if (!dock.contains(a.key)) dirty = true;
+            if (!sortAlpha && !dock.contains(a.key)) dirty = true;
             if (showUsage || !appLimits.isEmpty()) lastUsageUptime = 0;
             closePrevious(a.cn.getPackageName());
         } catch (Exception ignored) { }

@@ -16,8 +16,7 @@ Each checkbox is a single, standalone feature task.
 
 ## Sorting & Ranking
 - [ ] **Show launch counts**: Add a "Show launch counts" setting (On/Off, default Off) showing each App's Launch count on the right of its row in secondary text color.
-- [ ] **Sort modes**: Add a Settings option to switch App list order between Most used (default), A to Z, Recently used, Recently installed, and Custom.
-- [ ] **Custom app reordering**: Add Up and Down controls when sort mode is Custom so the App list order can be arranged manually.
+- [x] **Sort modes**: Add a Settings option to switch App list order between Most used (default) and A to Z.
 - [ ] **Reset launch counts**: Add a Settings action to zero all Launch counts without resetting the Dock or other preferences.
 
 ## Dock & Layout
