@@ -111,7 +111,7 @@ public final class MainActivity extends Activity {
     private Runnable pendingOwnerAction;
     private String loadedLoc = "";
     private int screen, gearPos, listIconPx, dockIconPx;
-    private volatile int iconGen, iconWorkingGen = -1, usageGen, usageWorkingGen = -1;
+    private volatile int iconGen, iconWorkingGen = -1, usageGen, usageWorkingGen = -1, loadGen, loadWorkingGen = -1;
     private long lastUsageUptime, lastUsageDayStart;
     private float density;
 
@@ -163,6 +163,7 @@ public final class MainActivity extends Activity {
             try { la.registerCallback(pkgCb); } catch (Exception ignored) { pkgCb = null; }
         }
         if (b == null) askDefaultHome();
+        loadAsync();
     }
 
     @Override protected void onStart() {
@@ -234,6 +235,7 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         ++iconGen;
         ++usageGen;
+        ++loadGen;
         if (la != null && pkgCb != null) {
             try { la.unregisterCallback(pkgCb); } catch (Exception ignored) { }
         }
@@ -1008,19 +1010,24 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void load() {
+    private static final class LoadResult {
+        final String loc;
+        final HashMap<String, App> byKey = new HashMap<>();
+        final HashSet<String> pkgs = new HashSet<>();
+        final ArrayList<String> dock = new ArrayList<>();
+        LoadResult(String loc) { this.loc = loc; }
+    }
+
+    private LoadResult loadData(String loc, boolean includeClones, HashSet<String> hiddenCopy) {
+        LoadResult res = new LoadResult(loc);
         Intent q = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
         // Cached names are only valid for the language they were loaded in.
-        String loc = getResources().getConfiguration().getLocales().get(0).toLanguageTag();
-        loadedLoc = loc;
         if (!loc.equals(labels.getString("_loc", ""))) labels.edit().clear().putString("_loc", loc).apply();
         SharedPreferences.Editor ed = null;
-        byKey.clear();
-        pkgs.clear();
         for (ResolveInfo r : pm.queryIntentActivities(q, 0)) {
             ActivityInfo a = r.activityInfo;
             if (a.packageName.equals(getPackageName())) continue;
-            pkgs.add(a.packageName);
+            res.pkgs.add(a.packageName);
             App app = new App();
             app.cn = new ComponentName(a.packageName, a.name);
             app.key = app.cn.flattenToShortString();
@@ -1033,10 +1040,10 @@ public final class MainActivity extends Activity {
             String custom = customLabels.getString(app.key, null);
             app.label = (custom != null && !custom.isEmpty()) ? custom : sysLabel;
             app.n = counts.getInt(app.key, 0);
-            byKey.put(app.key, app);
+            res.byKey.put(app.key, app);
         }
 
-        if (clones && la != null && um != null) {
+        if (includeClones && la != null && um != null) {
             UserHandle me = Process.myUserHandle();
             try {
                 for (UserHandle u : Build.VERSION.SDK_INT >= 26 ? la.getProfiles() : um.getUserProfiles()) {
@@ -1061,31 +1068,77 @@ public final class MainActivity extends Activity {
                         String custom = customLabels.getString(app.key, null);
                         app.label = (custom != null && !custom.isEmpty()) ? custom : sysLabel;
                         app.n = counts.getInt(app.key, 0);
-                        byKey.put(app.key, app);
+                        res.byKey.put(app.key, app);
                     }
                 }
             } catch (Exception ignored) { }
         }
         if (ed != null) ed.apply();
 
-        dock.clear();
         String saved = prefs.getString("dock", "");
         if (!saved.isEmpty()) {
             for (String k : saved.split(",")) {
-                if (byKey.containsKey(k) && !hidden.contains(k) && !dock.contains(k) && dock.size() < DOCK_MAX) dock.add(k);
+                if (res.byKey.containsKey(k) && !hiddenCopy.contains(k) && !res.dock.contains(k) && res.dock.size() < DOCK_MAX) {
+                    res.dock.add(k);
+                }
             }
         }
-        String joined = TextUtils.join(",", dock);
-        if (!joined.equals(saved)) saveDock(); // uninstalled/hidden apps drop out
+        String joined = TextUtils.join(",", res.dock);
+        if (!joined.equals(saved)) prefs.edit().putString("dock", joined).apply(); // uninstalled/hidden apps drop out
+        return res;
+    }
+
+    private void applyLoadResult(LoadResult res) {
+        loadedLoc = res.loc;
+        byKey.clear();
+        byKey.putAll(res.byKey);
+        pkgs.clear();
+        pkgs.addAll(res.pkgs);
+        dock.clear();
+        dock.addAll(res.dock);
+    }
+
+    private void load() {
+        ++loadGen;
+        String loc = getResources().getConfiguration().getLocales().get(0).toLanguageTag();
+        applyLoadResult(loadData(loc, clones, hidden));
+    }
+
+    private void loadAsync() {
+        final int gen = ++loadGen;
+        if (loadWorkingGen == gen) return;
+        loadWorkingGen = gen;
+        final String loc = getResources().getConfiguration().getLocales().get(0).toLanguageTag();
+        final boolean includeClones = clones;
+        final HashSet<String> hiddenCopy = new HashSet<>(hidden);
+        Thread w = new Thread(() -> {
+            LoadResult res = null;
+            try {
+                res = loadData(loc, includeClones, hiddenCopy);
+            } finally {
+                final LoadResult loaded = res;
+                mainHandler.post(() -> {
+                    if (loadWorkingGen == gen) loadWorkingGen = -1;
+                    if (gen != loadGen || isDestroyed() || loaded == null) return;
+                    reload = dirty = false;
+                    applyLoadResult(loaded);
+                    bind();
+                    syncUsage();
+                });
+            }
+        }, "kld-load");
+        w.setPriority(Thread.MAX_PRIORITY);
+        w.start();
     }
 
     private void syncIfNeeded() {
         String loc = getResources().getConfiguration().getLocales().get(0).toLanguageTag();
         if (!loc.equals(loadedLoc)) reload = true;
         if (byKey.isEmpty() || reload) {
-            reload = dirty = false;
-            load();
-            bind();
+            if (loadWorkingGen != loadGen) {
+                reload = dirty = false;
+                loadAsync();
+            }
         } else if (dirty) {
             dirty = false;
             bind();
